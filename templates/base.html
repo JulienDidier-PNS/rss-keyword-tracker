@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veille RSS</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Veille RSS</h1>
+    <p class="subtitle">
+      {{ total }} article(s) enregistré(s) · vérification toutes les {{ poll_interval }}s ·
+      {{ configured_feeds|length }} flux · {{ configured_keywords|length }} mot(s)-clé(s)
+    </p>
+    <nav class="tabs">
+      <a href="{{ url_for('matches') }}" class="{{ 'active' if active_tab == 'matches' else '' }}">Correspondances</a>
+      <a href="{{ url_for('all_titles') }}" class="{{ 'active' if active_tab == 'all' else '' }}">Tous les titres</a>
+    </nav>
+  </header>
+
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <div class="flash">
+        {% for message in messages %}<p>{{ message }}</p>{% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+
+  {% include "_manage.html" %}
+
+  <footer>
+    <p class="hint">Les changements ci-dessus sont écrits dans <code>config.json</code> et pris en compte automatiquement à la prochaine vérification.</p>
+  </footer>
+</body>
+</html>

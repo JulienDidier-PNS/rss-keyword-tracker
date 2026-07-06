@@ -1,0 +1,37 @@
+{% macro article_card(a) %}
+  <li class="article-card">
+    {% if a['poster_url'] %}
+      <img class="poster" src="{{ a['poster_url'] }}" alt="" loading="lazy">
+    {% else %}
+      <div class="poster poster-placeholder" aria-hidden="true">🎬</div>
+    {% endif %}
+    <div class="article-main">
+      <a class="article-title" href="{{ a['url'] }}" target="_blank" rel="noopener">{{ a['title'] }}</a>
+      <div class="article-meta">
+        <span class="feed-name">{{ a['feed_name'] }}</span>
+        {% if a['published'] %}<span class="dot">·</span><span>{{ a['published'] }}</span>{% endif %}
+        <span class="dot">·</span><span>vu le {{ a['first_seen'] }}</span>
+      </div>
+      {% if a['matched_keywords'] or not a['quality_ok'] %}
+        <div class="keywords">
+          {% if a['matched_keywords'] %}
+            {% for kw in a['matched_keywords'].split(', ') %}
+              <span class="badge">{{ kw }}</span>
+            {% endfor %}
+          {% endif %}
+          {% if not a['quality_ok'] %}
+            <span class="badge badge-muted" title="Ne contient aucun des filtres de qualité configurés">qualité ignorée</span>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+    <div class="article-actions">
+      {% if a['download_url'] %}
+        <a class="btn btn-primary btn-small" href="{{ a['download_url'] }}">Télécharger</a>
+      {% endif %}
+      <form method="post" action="{{ url_for('delete', article_id=a['id']) }}">
+        <button type="submit" class="btn btn-icon" title="Supprimer">✕</button>
+      </form>
+    </div>
+  </li>
+{% endmacro %}

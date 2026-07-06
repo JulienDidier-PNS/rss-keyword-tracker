@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_article_card.html" as cards %}
+
+{% block content %}
+  <section class="toolbar">
+    <form method="get" class="filters">
+      <select name="feed" onchange="this.form.submit()">
+        <option value="">Tous les flux</option>
+        {% for name in feed_names %}
+          <option value="{{ name }}" {% if name == feed_filter %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+
+      <input type="text" name="q" value="{{ search }}" placeholder="Rechercher un titre…" onchange="this.form.submit()">
+
+      {% if search or feed_filter %}
+        <a href="{{ url_for('all_titles') }}" class="btn btn-ghost">Réinitialiser</a>
+      {% endif %}
+    </form>
+
+    <form method="post" action="{{ url_for('refresh') }}">
+      <button type="submit" class="btn btn-primary">Vérifier maintenant</button>
+    </form>
+  </section>
+
+  <main>
+    {% if articles %}
+      <ul class="article-list">
+        {% for a in articles %}{{ cards.article_card(a) }}{% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">Aucun titre enregistré pour l'instant. Cette page liste tous les articles vus dans
+      tes flux, qu'ils correspondent ou non à un mot-clé.</p>
+    {% endif %}
+  </main>
+{% endblock %}

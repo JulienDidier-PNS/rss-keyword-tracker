@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% import "_article_card.html" as cards %}
+
+{% block content %}
+  <section class="toolbar">
+    <form method="get" class="filters">
+      <select name="feed" onchange="this.form.submit()">
+        <option value="">Tous les flux</option>
+        {% for name in feed_names %}
+          <option value="{{ name }}" {% if name == feed_filter %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+
+      <select name="keyword" onchange="this.form.submit()">
+        <option value="">Tous les mots-clés</option>
+        {% for kw in configured_keywords %}
+          <option value="{{ kw }}" {% if kw == keyword_filter %}selected{% endif %}>{{ kw }}</option>
+        {% endfor %}
+      </select>
+
+      {% if keyword_filter or feed_filter %}
+        <a href="{{ url_for('matches') }}" class="btn btn-ghost">Réinitialiser</a>
+      {% endif %}
+    </form>
+
+    <form method="post" action="{{ url_for('refresh') }}">
+      <button type="submit" class="btn btn-primary">Vérifier maintenant</button>
+    </form>
+  </section>
+
+  <main>
+    {% if articles %}
+      <ul class="article-list">
+        {% for a in articles %}{{ cards.article_card(a) }}{% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">Aucun article ne correspond pour l'instant. Ils apparaîtront ici dès qu'un flux publie
+      un article contenant un de tes mots-clés (et passant les filtres de qualité, si configurés).</p>
+    {% endif %}
+  </main>
+{% endblock %}
