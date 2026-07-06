@@ -16,6 +16,7 @@
     <nav class="tabs">
       <a href="{{ url_for('matches') }}" class="{{ 'active' if active_tab == 'matches' else '' }}">Correspondances</a>
       <a href="{{ url_for('all_titles') }}" class="{{ 'active' if active_tab == 'all' else '' }}">Tous les titres</a>
+      <a href="{{ url_for('settings') }}" class="{{ 'active' if active_tab == 'settings' else '' }}">Configuration</a>
     </nav>
   </header>
 
@@ -29,10 +30,8 @@
 
   {% block content %}{% endblock %}
 
-  {% include "_manage.html" %}
-
   <footer>
-    <p class="hint">Les changements ci-dessus sont écrits dans <code>config.json</code> et pris en compte automatiquement à la prochaine vérification.</p>
+    <p class="hint">Les changements dans la configuration sont écrits dans <code>config.json</code> et pris en compte automatiquement à la prochaine vérification.</p>
   </footer>
 </body>
 </html>

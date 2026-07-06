@@ -112,6 +112,15 @@ def all_titles():
     )
 
 
+@app.route("/settings")
+def settings():
+    return render_template(
+        "settings.html",
+        active_tab="settings",
+        **common_context(),
+    )
+
+
 @app.route("/refresh", methods=["POST"])
 def refresh():
     fetch_once()
