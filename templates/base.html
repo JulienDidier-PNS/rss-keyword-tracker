@@ -46,9 +46,12 @@
       </div>
       <div class="modal-info">
         <h2 id="modal-title"></h2>
-        <p id="modal-meta" class="modal-meta"></p>
+        <div id="modal-details" class="modal-details"></div>
         <div id="modal-keywords" class="keywords"></div>
-        <p id="modal-summary" class="modal-summary"></p>
+        <div class="modal-summary-block">
+          <h3>Résumé</h3>
+          <p id="modal-summary" class="modal-summary"></p>
+        </div>
         <div class="modal-actions">
           <a id="modal-download" class="btn btn-primary" href="#">Télécharger</a>
           <a id="modal-open" class="btn btn-ghost" href="#" target="_blank" rel="noopener">Ouvrir la source</a>
@@ -62,6 +65,24 @@
       var tmp = document.createElement("div");
       tmp.innerHTML = html || "";
       return tmp.textContent || tmp.innerText || "";
+    }
+
+    function addDetailRow(container, label, value) {
+      if (!value) return;
+      var row = document.createElement("div");
+      row.className = "detail-row";
+
+      var lbl = document.createElement("span");
+      lbl.className = "detail-label";
+      lbl.textContent = label;
+
+      var val = document.createElement("span");
+      val.className = "detail-value";
+      val.textContent = value;
+
+      row.appendChild(lbl);
+      row.appendChild(val);
+      container.appendChild(row);
     }
 
     function openArticleModal(cardEl) {
@@ -80,12 +101,12 @@
         placeholder.style.display = "flex";
       }
 
-      var metaParts = [];
-      if (data.feed_name) metaParts.push(data.feed_name);
-      if (data.published) metaParts.push("publié : " + data.published);
-      metaParts.push("ajouté le : " + data.first_seen);
-      if (data.quality_tags) metaParts.push("qualité détectée : " + data.quality_tags);
-      document.getElementById("modal-meta").textContent = metaParts.join(" · ");
+      var detailsEl = document.getElementById("modal-details");
+      detailsEl.innerHTML = "";
+      addDetailRow(detailsEl, "Flux", data.feed_name);
+      addDetailRow(detailsEl, "Publié", data.published);
+      addDetailRow(detailsEl, "Ajouté le", data.first_seen);
+      addDetailRow(detailsEl, "Qualité détectée", data.quality_tags);
 
       var kwEl = document.getElementById("modal-keywords");
       kwEl.innerHTML = "";
@@ -102,7 +123,9 @@
         kwEl.appendChild(muted);
       }
 
-      document.getElementById("modal-summary").textContent = stripHtml(data.summary);
+      var summaryText = stripHtml(data.summary);
+      document.getElementById("modal-summary").textContent = summaryText;
+      document.querySelector(".modal-summary-block").style.display = summaryText ? "block" : "none";
 
       var dl = document.getElementById("modal-download");
       if (data.download_url) {
