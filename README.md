@@ -19,6 +19,13 @@ Note : les filtres de qualité s'appliquent aux articles au moment où ils sont
 récupérés — modifier la liste de filtres ne change pas rétroactivement le
 statut des articles déjà enregistrés, seulement les prochains.
 
+## Sécurité
+
+`config.json` (flux avec passkey, clé TMDB) n'est jamais commité — il est dans
+`.gitignore`. Si tu clones ce repo sur un nouveau poste, recrée-le à partir de
+`config.example.json` (voir plus bas) et n'y mets que tes propres secrets.
+Ne mets jamais de vraie clé/passkey dans `config.example.json` ni dans le code.
+
 ## Affiches
 
 Deux sources, utilisées dans cet ordre :
@@ -56,6 +63,11 @@ torrent (noms de release) et des flux "propres" comme Hydracker.
 
 ## Configuration (`config.json`)
 
+`config.json` contient tes flux (parfois avec passkey), tes mots-clés et ta
+clé TMDB — il n'est **pas** versionné (voir `.gitignore`) pour éviter de
+publier des secrets sur GitHub. `config.example.json` est le modèle versionné,
+sans secrets :
+
 ```json
 {
   "poll_interval_seconds": 300,
@@ -63,9 +75,21 @@ torrent (noms de release) et des flux "propres" comme Hydracker.
     { "name": "Le Monde", "url": "https://www.lemonde.fr/rss/une.xml" }
   ],
   "keywords": ["intelligence artificielle", "cybersecurite"],
-  "quality_filters": []
+  "quality_filters": [],
+  "tmdb_api_key": ""
 }
 ```
+
+Au premier lancement, si `config.json` n'existe pas encore, l'appli le crée
+automatiquement à partir de `config.example.json`. Tu peux aussi le faire
+toi-même :
+
+```powershell
+copy config.example.json config.json
+```
+
+Puis personnalise `config.json` (ou utilise la page Configuration du
+dashboard, qui écrit dans ce même fichier).
 
 - `poll_interval_seconds` : fréquence de vérification des flux (300 = 5 minutes).
 - `quality_filters` : termes recherchés dans le nom (résolution, langue,

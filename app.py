@@ -7,6 +7,7 @@ from fetcher import (
     add_keyword,
     add_quality_filter,
     backfill_posters,
+    ensure_config_exists,
     fetch_once,
     get_connection,
     init_db,
@@ -24,6 +25,7 @@ app.secret_key = secrets.token_hex(16)
 # Exécuté à l'import du module : nécessaire pour que ça marche aussi
 # quand l'appli est servie via waitress (waitress-serve app:app), pas
 # seulement via "python app.py".
+ensure_config_exists()
 init_db()
 start_background_thread()
 

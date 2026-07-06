@@ -1,0 +1,12 @@
+{
+  "poll_interval_seconds": 300,
+  "feeds": [
+    { "name": "Le Monde", "url": "https://www.lemonde.fr/rss/une.xml" },
+    { "name": "Hydracker", "url": "https://hydracker.com/feed" }
+  ],
+  "keywords": [
+    "house of the dragon"
+  ],
+  "quality_filters": [],
+  "tmdb_api_key": ""
+}

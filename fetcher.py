@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -11,6 +12,7 @@ import requests
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+CONFIG_EXAMPLE_PATH = BASE_DIR / "config.example.json"
 DB_PATH = BASE_DIR / "articles.db"
 
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/multi"
@@ -45,6 +47,15 @@ def normalize(text):
     text = re.sub(r"[._\-]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def ensure_config_exists():
+    """config.json contient des secrets (clés API, passkeys) et n'est donc pas
+    versionné (voir .gitignore). Au premier lancement après un clone, on le
+    crée à partir de config.example.json pour que l'appli démarre quand même."""
+    if not CONFIG_PATH.exists() and CONFIG_EXAMPLE_PATH.exists():
+        shutil.copy(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
+        print(f"[config] {CONFIG_PATH.name} créé à partir de {CONFIG_EXAMPLE_PATH.name} — pense à le personnaliser.")
 
 
 def load_config():
