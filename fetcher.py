@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import feedparser
@@ -14,6 +15,8 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 CONFIG_EXAMPLE_PATH = BASE_DIR / "config.example.json"
 DB_PATH = BASE_DIR / "articles.db"
+
+RETENTION_DAYS = 30
 
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/multi"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
@@ -168,6 +171,14 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dismissed_urls (
+            url TEXT PRIMARY KEY,
+            dismissed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     # Migrations pour les bases créées avant l'ajout de ces colonnes.
     existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(articles)")}
     if "download_url" not in existing_columns:
@@ -177,6 +188,36 @@ def init_db():
     if "poster_url" not in existing_columns:
         conn.execute("ALTER TABLE articles ADD COLUMN poster_url TEXT")
     conn.commit()
+    conn.close()
+
+
+def is_dismissed(conn, url):
+    return conn.execute("SELECT 1 FROM dismissed_urls WHERE url = ?", (url,)).fetchone() is not None
+
+
+def dismiss_article(article_id):
+    """Supprime l'article et retient son URL de façon permanente, pour qu'il
+    ne soit jamais réinséré au prochain pull du flux (ex: faux positif à
+    écarter définitivement). Sans ça, supprimer un article ne servait à rien
+    puisque son URL redevenait "nouvelle" dès le prochain rafraîchissement."""
+    conn = get_connection()
+    row = conn.execute("SELECT url FROM articles WHERE id = ?", (article_id,)).fetchone()
+    if row is not None:
+        with _lock:
+            conn.execute("INSERT OR IGNORE INTO dismissed_urls (url) VALUES (?)", (row["url"],))
+            conn.execute("DELETE FROM articles WHERE id = ?", (article_id,))
+            conn.commit()
+    conn.close()
+
+
+def purge_old_articles(days=RETENTION_DAYS):
+    """Supprime les articles vus il y a plus de `days` jours, pour ne pas
+    laisser la base grossir indéfiniment."""
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    with _lock:
+        conn.execute("DELETE FROM articles WHERE first_seen < ?", (cutoff,))
+        conn.commit()
     conn.close()
 
 
@@ -326,6 +367,8 @@ def fetch_once():
             link = entry.get("link")
             if not link:
                 continue
+            if is_dismissed(conn, link):
+                continue
 
             matched = match_keywords(title, summary, keywords)
             quality_ok = matches_quality(title, summary, quality_filters)
@@ -398,6 +441,7 @@ def backfill_posters():
 
 def background_loop():
     init_db()
+    purge_old_articles()
     while True:
         config = load_config()
         interval = config.get("poll_interval_seconds", 300)
@@ -405,6 +449,7 @@ def background_loop():
             n = fetch_once()
             if n:
                 print(f"[fetch] {n} nouvel(le)(s) article(s) trouvé(s)")
+            purge_old_articles()
         except Exception as exc:
             print(f"[fetch] erreur inattendue: {exc}")
         time.sleep(interval)

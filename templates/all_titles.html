@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_article_card.html" as cards %}
+{% import "_pagination.html" as paging %}
 
 {% block content %}
   <section class="toolbar">
@@ -26,9 +27,11 @@
 
   <main>
     {% if articles %}
+      <p class="result-count">{{ total_filtered }} résultat(s)</p>
       <ul class="article-list">
         {% for a in articles %}{{ cards.article_card(a) }}{% endfor %}
       </ul>
+      {{ paging.pagination('all_titles', page, total_pages, filter_args) }}
     {% else %}
       <p class="empty">Aucun titre enregistré pour l'instant. Cette page liste tous les articles vus dans
       tes flux, qu'ils correspondent ou non à un mot-clé.</p>

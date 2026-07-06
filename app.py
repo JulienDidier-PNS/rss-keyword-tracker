@@ -1,3 +1,4 @@
+import math
 import secrets
 
 from flask import Flask, flash, redirect, render_template, request, url_for
@@ -7,11 +8,13 @@ from fetcher import (
     add_keyword,
     add_quality_filter,
     backfill_posters,
+    dismiss_article,
     ensure_config_exists,
     fetch_once,
     get_connection,
     init_db,
     load_config,
+    purge_old_articles,
     remove_feed,
     remove_keyword,
     remove_quality_filter,
@@ -22,12 +25,29 @@ from fetcher import (
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
+PAGE_SIZE = 24
+
 # Exécuté à l'import du module : nécessaire pour que ça marche aussi
 # quand l'appli est servie via waitress (waitress-serve app:app), pas
 # seulement via "python app.py".
 ensure_config_exists()
 init_db()
+purge_old_articles()
 start_background_thread()
+
+
+def paginate(conn, where_sql, params, page):
+    total_filtered = conn.execute(f"SELECT COUNT(*) AS c FROM articles {where_sql}", params).fetchone()["c"]
+    total_pages = max(1, math.ceil(total_filtered / PAGE_SIZE))
+    page = min(max(page, 1), total_pages)
+    offset = (page - 1) * PAGE_SIZE
+
+    articles = conn.execute(
+        f"SELECT * FROM articles {where_sql} ORDER BY first_seen DESC LIMIT ? OFFSET ?",
+        params + [PAGE_SIZE, offset],
+    ).fetchall()
+
+    return articles, page, total_pages, total_filtered
 
 
 def common_context():
@@ -53,26 +73,34 @@ def common_context():
 
 @app.route("/")
 def matches():
-    conn = get_connection()
     keyword_filter = request.args.get("keyword", "").strip()
     feed_filter = request.args.get("feed", "").strip()
     search = request.args.get("q", "").strip()
+    page = request.args.get("page", 1, type=int) or 1
 
-    query = "SELECT * FROM articles WHERE matched_keywords != '' AND quality_ok = 1"
+    where_sql = "WHERE matched_keywords != '' AND quality_ok = 1"
     params = []
     if keyword_filter:
-        query += " AND matched_keywords LIKE ?"
+        where_sql += " AND matched_keywords LIKE ?"
         params.append(f"%{keyword_filter}%")
     if feed_filter:
-        query += " AND feed_name = ?"
+        where_sql += " AND feed_name = ?"
         params.append(feed_filter)
     if search:
-        query += " AND title LIKE ?"
+        where_sql += " AND title LIKE ?"
         params.append(f"%{search}%")
-    query += " ORDER BY first_seen DESC LIMIT 300"
 
-    articles = conn.execute(query, params).fetchall()
+    conn = get_connection()
+    articles, page, total_pages, total_filtered = paginate(conn, where_sql, params, page)
     conn.close()
+
+    filter_args = {}
+    if keyword_filter:
+        filter_args["keyword"] = keyword_filter
+    if feed_filter:
+        filter_args["feed"] = feed_filter
+    if search:
+        filter_args["q"] = search
 
     return render_template(
         "matches.html",
@@ -81,28 +109,38 @@ def matches():
         keyword_filter=keyword_filter,
         feed_filter=feed_filter,
         search=search,
+        page=page,
+        total_pages=total_pages,
+        total_filtered=total_filtered,
+        filter_args=filter_args,
         **common_context(),
     )
 
 
 @app.route("/all")
 def all_titles():
-    conn = get_connection()
     feed_filter = request.args.get("feed", "").strip()
     search = request.args.get("q", "").strip()
+    page = request.args.get("page", 1, type=int) or 1
 
-    query = "SELECT * FROM articles WHERE 1=1"
+    where_sql = "WHERE 1=1"
     params = []
     if feed_filter:
-        query += " AND feed_name = ?"
+        where_sql += " AND feed_name = ?"
         params.append(feed_filter)
     if search:
-        query += " AND title LIKE ?"
+        where_sql += " AND title LIKE ?"
         params.append(f"%{search}%")
-    query += " ORDER BY first_seen DESC LIMIT 300"
 
-    articles = conn.execute(query, params).fetchall()
+    conn = get_connection()
+    articles, page, total_pages, total_filtered = paginate(conn, where_sql, params, page)
     conn.close()
+
+    filter_args = {}
+    if feed_filter:
+        filter_args["feed"] = feed_filter
+    if search:
+        filter_args["q"] = search
 
     return render_template(
         "all_titles.html",
@@ -110,6 +148,10 @@ def all_titles():
         articles=articles,
         feed_filter=feed_filter,
         search=search,
+        page=page,
+        total_pages=total_pages,
+        total_filtered=total_filtered,
+        filter_args=filter_args,
         **common_context(),
     )
 
@@ -131,10 +173,7 @@ def refresh():
 
 @app.route("/delete/<int:article_id>", methods=["POST"])
 def delete(article_id):
-    conn = get_connection()
-    conn.execute("DELETE FROM articles WHERE id = ?", (article_id,))
-    conn.commit()
-    conn.close()
+    dismiss_article(article_id)
     return redirect(request.referrer or url_for("matches"))
 
 

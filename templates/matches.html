@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_article_card.html" as cards %}
+{% import "_pagination.html" as paging %}
 
 {% block content %}
   <section class="toolbar">
@@ -33,9 +34,11 @@
 
   <main>
     {% if articles %}
+      <p class="result-count">{{ total_filtered }} résultat(s)</p>
       <ul class="article-list">
         {% for a in articles %}{{ cards.article_card(a) }}{% endfor %}
       </ul>
+      {{ paging.pagination('matches', page, total_pages, filter_args) }}
     {% else %}
       <p class="empty">Aucun article ne correspond pour l'instant. Ils apparaîtront ici dès qu'un flux publie
       un article contenant un de tes mots-clés (et passant les filtres de qualité, si configurés).</p>

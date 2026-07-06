@@ -15,6 +15,10 @@ gestion des flux/mots-clés/filtres de qualité directement depuis l'interface
   apparaissent avec un badge "qualité ignorée", pour comprendre pourquoi ils
   ne sont pas dans les correspondances.
 
+Les deux pages affichent une grille d'affiches paginée (24 par page, voir
+`PAGE_SIZE` dans `app.py`), avec les filtres actifs conservés en changeant de
+page.
+
 Note : les filtres de qualité s'appliquent aux articles au moment où ils sont
 récupérés — modifier la liste de filtres ne change pas rétroactivement le
 statut des articles déjà enregistrés, seulement les prochains.
@@ -155,4 +159,19 @@ Deux options simples, du plus léger au plus robuste :
 
 Les articles trouvés sont stockés dans `articles.db` (SQLite), à la racine du
 projet. Chaque URL n'est enregistrée qu'une fois (déduplication automatique).
-Tu peux supprimer une ligne directement depuis le dashboard (icône ✕).
+
+- **Persistance** : `articles.db` est un fichier normal qui survit aux
+  redémarrages de l'appli (arrêt/relance du process, reboot du serveur…). Il
+  n'est jamais vidé par le code. Il est aussi gitignoré (comme `config.json`)
+  car c'est une donnée locale, pas du code — si ton processus de mise à jour
+  supprime et recrée le dossier du projet (au lieu d'un `git pull` sur un
+  dossier existant), ce fichier non versionné disparaît avec, ce qui donne
+  l'impression que tout est "reparti à 0". Mets à jour via `git pull` dans le
+  même dossier pour conserver l'historique.
+- **Rétention** : les articles vus il y a plus de 30 jours sont supprimés
+  automatiquement à chaque cycle de vérification (voir `RETENTION_DAYS` dans
+  `fetcher.py` pour changer cette valeur).
+- **Suppression = définitif** : supprimer une ligne depuis le dashboard
+  (icône ✕) retient son URL de façon permanente (table `dismissed_urls`) —
+  elle ne réapparaîtra jamais, même si le flux la republie plus tard. Utile
+  pour écarter un faux positif une bonne fois pour toutes.

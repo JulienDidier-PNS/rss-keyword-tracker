@@ -1,0 +1,19 @@
+{% macro pagination(endpoint, page, total_pages, filter_args) %}
+  {% if total_pages > 1 %}
+    <nav class="pagination">
+      {% if page > 1 %}
+        <a href="{{ url_for(endpoint, page=page - 1, **filter_args) }}" class="btn btn-ghost btn-small">← Précédent</a>
+      {% else %}
+        <span class="btn btn-ghost btn-small btn-disabled">← Précédent</span>
+      {% endif %}
+
+      <span class="pagination-status">Page {{ page }} / {{ total_pages }}</span>
+
+      {% if page < total_pages %}
+        <a href="{{ url_for(endpoint, page=page + 1, **filter_args) }}" class="btn btn-ghost btn-small">Suivant →</a>
+      {% else %}
+        <span class="btn btn-ghost btn-small btn-disabled">Suivant →</span>
+      {% endif %}
+    </nav>
+  {% endif %}
+{% endmacro %}
