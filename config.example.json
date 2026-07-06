@@ -5,8 +5,7 @@
     { "name": "Hydracker", "url": "https://hydracker.com/feed" }
   ],
   "keywords": [
-    "house of the dragon"
+    { "keyword": "house of the dragon", "quality": "1080p" }
   ],
-  "quality_filters": [],
   "tmdb_api_key": ""
 }

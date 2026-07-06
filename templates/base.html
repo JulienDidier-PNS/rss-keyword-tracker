@@ -10,8 +10,11 @@
   <header>
     <h1>Veille RSS</h1>
     <p class="subtitle">
-      {{ total }} article(s) enregistré(s) · vérification toutes les {{ poll_interval }}s ·
-      {{ configured_feeds|length }} flux · {{ configured_keywords|length }} mot(s)-clé(s)
+      {{ total }} article(s) enregistré(s) · {{ configured_feeds|length }} flux ·
+      {{ configured_keywords|length }} mot(s)-clé(s)
+      {% if next_fetch_seconds is not none %}
+        · prochaine vérification dans <span id="next-fetch-countdown" data-seconds="{{ next_fetch_seconds }}">…</span>
+      {% endif %}
     </p>
     <nav class="tabs">
       <a href="{{ url_for('matches') }}" class="{{ 'active' if active_tab == 'matches' else '' }}">Correspondances</a>
@@ -33,5 +36,122 @@
   <footer>
     <p class="hint">Les changements dans la configuration sont écrits dans <code>config.json</code> et pris en compte automatiquement à la prochaine vérification.</p>
   </footer>
+
+  <dialog id="article-modal" class="article-modal">
+    <button type="button" class="modal-close" onclick="document.getElementById('article-modal').close()" aria-label="Fermer">✕</button>
+    <div class="modal-body">
+      <div class="modal-poster-wrap">
+        <img id="modal-poster" class="modal-poster" src="" alt="">
+        <div id="modal-poster-placeholder" class="poster poster-placeholder modal-poster" aria-hidden="true">🎬</div>
+      </div>
+      <div class="modal-info">
+        <h2 id="modal-title"></h2>
+        <p id="modal-meta" class="modal-meta"></p>
+        <div id="modal-keywords" class="keywords"></div>
+        <p id="modal-summary" class="modal-summary"></p>
+        <div class="modal-actions">
+          <a id="modal-download" class="btn btn-primary" href="#">Télécharger</a>
+          <a id="modal-open" class="btn btn-ghost" href="#" target="_blank" rel="noopener">Ouvrir la source</a>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    function stripHtml(html) {
+      var tmp = document.createElement("div");
+      tmp.innerHTML = html || "";
+      return tmp.textContent || tmp.innerText || "";
+    }
+
+    function openArticleModal(cardEl) {
+      var data = JSON.parse(cardEl.dataset.article);
+
+      document.getElementById("modal-title").textContent = data.title;
+
+      var poster = document.getElementById("modal-poster");
+      var placeholder = document.getElementById("modal-poster-placeholder");
+      if (data.poster_url) {
+        poster.src = data.poster_url;
+        poster.style.display = "block";
+        placeholder.style.display = "none";
+      } else {
+        poster.style.display = "none";
+        placeholder.style.display = "flex";
+      }
+
+      var metaParts = [];
+      if (data.feed_name) metaParts.push(data.feed_name);
+      if (data.published) metaParts.push("publié : " + data.published);
+      metaParts.push("ajouté le : " + data.first_seen);
+      if (data.quality_tags) metaParts.push("qualité détectée : " + data.quality_tags);
+      document.getElementById("modal-meta").textContent = metaParts.join(" · ");
+
+      var kwEl = document.getElementById("modal-keywords");
+      kwEl.innerHTML = "";
+      (data.matched_keywords ? data.matched_keywords.split(", ").filter(Boolean) : []).forEach(function (kw) {
+        var span = document.createElement("span");
+        span.className = "badge";
+        span.textContent = kw;
+        kwEl.appendChild(span);
+      });
+      if (!data.quality_ok) {
+        var muted = document.createElement("span");
+        muted.className = "badge badge-muted";
+        muted.textContent = "qualité ignorée";
+        kwEl.appendChild(muted);
+      }
+
+      document.getElementById("modal-summary").textContent = stripHtml(data.summary);
+
+      var dl = document.getElementById("modal-download");
+      if (data.download_url) {
+        dl.href = data.download_url;
+        dl.style.display = "inline-block";
+      } else {
+        dl.style.display = "none";
+      }
+
+      document.getElementById("modal-open").href = data.url;
+
+      document.getElementById("article-modal").showModal();
+    }
+
+    (function () {
+      var modal = document.getElementById("article-modal");
+      if (!modal) return;
+      modal.addEventListener("click", function (event) {
+        if (event.target === modal) modal.close();
+      });
+    })();
+  </script>
+
+  <script>
+    (function () {
+      var el = document.getElementById("next-fetch-countdown");
+      if (!el) return;
+      var remaining = parseInt(el.dataset.seconds, 10);
+      if (isNaN(remaining)) return;
+
+      function format(s) {
+        if (s <= 0) return "quelques secondes";
+        var m = Math.floor(s / 60);
+        var sec = s % 60;
+        return m > 0 ? (m + " min " + String(sec).padStart(2, "0") + " s") : (sec + " s");
+      }
+
+      function tick() {
+        el.textContent = format(remaining);
+        if (remaining > 0) {
+          remaining -= 1;
+          setTimeout(tick, 1000);
+        } else {
+          el.textContent = "vérification en cours…";
+        }
+      }
+
+      tick();
+    })();
+  </script>
 </body>
 </html>

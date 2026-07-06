@@ -23,6 +23,8 @@ TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
 
 _lock = threading.Lock()
 _config_lock = threading.Lock()
+_state_lock = threading.Lock()
+_next_fetch_at = None
 
 _SEASON_EPISODE_RE = re.compile(r"\bS\d{1,2}E\d{1,3}\b", re.IGNORECASE)
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
@@ -61,10 +63,39 @@ def ensure_config_exists():
         print(f"[config] {CONFIG_PATH.name} créé à partir de {CONFIG_EXAMPLE_PATH.name} — pense à le personnaliser.")
 
 
+def _migrate_keywords(config):
+    """Ancien format : "keywords" (liste de chaînes) + "quality_filters"
+    (liste globale appliquée à tous les mots-clés indistinctement). Nouveau
+    format : chaque mot-clé porte sa propre qualité optionnelle, ex.
+    {"keyword": "house of the dragon", "quality": "1080p"} — un mot-clé sans
+    lien avec le format d'un autre flux (ex. Hydracker) n'est plus pénalisé
+    par un filtre qualité pensé pour un autre flux (ex. Torr9)."""
+    keywords = config.get("keywords", [])
+    legacy_quality_filters = config.get("quality_filters")
+    default_quality = legacy_quality_filters[0] if legacy_quality_filters else ""
+
+    needs_migration = legacy_quality_filters is not None or any(isinstance(k, str) for k in keywords)
+    if not needs_migration:
+        return config
+
+    normalized = []
+    for kw in keywords:
+        if isinstance(kw, str):
+            normalized.append({"keyword": kw, "quality": default_quality})
+        else:
+            normalized.append({"keyword": kw.get("keyword", ""), "quality": kw.get("quality", "")})
+
+    config["keywords"] = normalized
+    config.pop("quality_filters", None)
+    save_config(config)
+    return config
+
+
 def load_config():
     with _config_lock:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            config = json.load(f)
+    return _migrate_keywords(config)
 
 
 def save_config(config):
@@ -75,38 +106,42 @@ def save_config(config):
         tmp_path.replace(CONFIG_PATH)
 
 
-def add_keyword(keyword):
+def add_keyword(keyword, quality=""):
     keyword = keyword.strip()
+    quality = quality.strip()
     if not keyword:
         return
     config = load_config()
-    existing = [normalize(k) for k in config.get("keywords", [])]
-    if normalize(keyword) not in existing:
-        config.setdefault("keywords", []).append(keyword)
+    entries = config.setdefault("keywords", [])
+    exists = any(
+        normalize(e.get("keyword", "")) == normalize(keyword) and normalize(e.get("quality", "")) == normalize(quality)
+        for e in entries
+    )
+    if not exists:
+        entries.append({"keyword": keyword, "quality": quality})
         save_config(config)
 
 
-def remove_keyword(keyword):
+def remove_keyword(keyword, quality=""):
     config = load_config()
-    config["keywords"] = [k for k in config.get("keywords", []) if k != keyword]
+    config["keywords"] = [
+        e for e in config.get("keywords", []) if not (e.get("keyword") == keyword and e.get("quality", "") == quality)
+    ]
     save_config(config)
 
 
-def add_quality_filter(value):
-    value = value.strip()
-    if not value:
-        return
-    config = load_config()
-    existing = [normalize(v) for v in config.get("quality_filters", [])]
-    if normalize(value) not in existing:
-        config.setdefault("quality_filters", []).append(value)
-        save_config(config)
+def _set_next_fetch_at(seconds_from_now):
+    global _next_fetch_at
+    with _state_lock:
+        _next_fetch_at = datetime.utcnow() + timedelta(seconds=seconds_from_now)
 
 
-def remove_quality_filter(value):
-    config = load_config()
-    config["quality_filters"] = [v for v in config.get("quality_filters", []) if v != value]
-    save_config(config)
+def get_seconds_until_next_fetch():
+    with _state_lock:
+        target = _next_fetch_at
+    if target is None:
+        return None
+    return max(0, int((target - datetime.utcnow()).total_seconds()))
 
 
 def add_feed(name, url):
@@ -154,6 +189,7 @@ def init_db():
             download_url TEXT,
             summary TEXT,
             published TEXT,
+            published_at TEXT,
             matched_keywords TEXT,
             quality_ok INTEGER DEFAULT 1,
             poster_url TEXT,
@@ -187,6 +223,8 @@ def init_db():
         conn.execute("ALTER TABLE articles ADD COLUMN quality_ok INTEGER DEFAULT 1")
     if "poster_url" not in existing_columns:
         conn.execute("ALTER TABLE articles ADD COLUMN poster_url TEXT")
+    if "published_at" not in existing_columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN published_at TEXT")
     conn.commit()
     conn.close()
 
@@ -221,21 +259,32 @@ def purge_old_articles(days=RETENTION_DAYS):
     conn.close()
 
 
-def match_keywords(title, summary, keywords):
-    haystack = normalize(f"{title} {summary}")
-    return [kw for kw in keywords if normalize(kw) in haystack]
+def match_keyword_entries(title, summary, keyword_entries):
+    """Pour chaque mot-clé configuré (avec sa qualité optionnelle associée),
+    vérifie si le titre/résumé matche. Un mot-clé sans qualité associée est
+    toujours confirmé dès que le texte matche. Un mot-clé avec une qualité
+    associée (ex. "1080p") n'est confirmé que si cette qualité est *aussi*
+    présente dans le texte — sinon il est compté comme "texte trouvé mais
+    qualité refusée", pour distinguer les vrais faux-positifs des articles
+    juste dans la mauvaise qualité.
 
-
-def matches_quality(title, summary, quality_filters):
-    """Filtre qualité (résolution, langue, codec...) détecté directement dans le
-    nom/titre de la release, ex: "1080p", "MULTi", "VOSTFR". Si aucun filtre
-    n'est configuré, tout passe. Sinon, il suffit qu'un des filtres soit présent
-    (liste blanche) — permet par ex. d'accepter "1080p" en VF ou en VOSTFR sans
-    exiger les deux à la fois."""
-    if not quality_filters:
-        return True
+    Renvoie (confirmed, quality_rejected) : deux listes de noms de mots-clés.
+    """
     haystack = normalize(f"{title} {summary}")
-    return any(normalize(q) in haystack for q in quality_filters)
+    confirmed = []
+    quality_rejected = []
+
+    for entry in keyword_entries:
+        keyword = entry.get("keyword", "")
+        quality = entry.get("quality", "").strip()
+        if not keyword or normalize(keyword) not in haystack:
+            continue
+        if quality and normalize(quality) not in haystack:
+            quality_rejected.append(keyword)
+        else:
+            confirmed.append(keyword)
+
+    return confirmed, quality_rejected
 
 
 def extract_download_url(entry):
@@ -246,6 +295,27 @@ def extract_download_url(entry):
         if href:
             return href
     return None
+
+
+def extract_published_at(entry):
+    """Date de publication normalisée (UTC, triable) à partir du flux. Utilisée
+    pour trier par date réelle de l'article plutôt que par date de récupération :
+    plusieurs épisodes récupérés dans le même cycle auraient sinon la même date
+    de récupération, quel que soit leur ordre de sortie réel."""
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not parsed:
+        return None
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", parsed)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_quality_tags(title):
+    """Tags de qualité détectés dans le titre (résolution, langue, codec...),
+    ex. ["MULTi", "1080p", "H264"] — affichage informatif dans la fiche détail,
+    indépendant des mots-clés/qualités configurés."""
+    return [m.group(0) for m in _QUALITY_TAG_RE.finditer(title or "")]
 
 
 def extract_poster_from_summary(summary):
@@ -345,8 +415,7 @@ def fetch_once():
     Relit config.json à chaque appel : éditer le fichier suffit, pas besoin de
     relancer l'appli."""
     config = load_config()
-    keywords = config.get("keywords", [])
-    quality_filters = config.get("quality_filters", [])
+    keyword_entries = config.get("keywords", [])
     feeds = config.get("feeds", [])
 
     conn = get_connection()
@@ -370,9 +439,10 @@ def fetch_once():
             if is_dismissed(conn, link):
                 continue
 
-            matched = match_keywords(title, summary, keywords)
-            quality_ok = matches_quality(title, summary, quality_filters)
+            matched, quality_rejected = match_keyword_entries(title, summary, keyword_entries)
+            quality_ok = not quality_rejected
             published = entry.get("published", entry.get("updated", ""))
+            published_at = extract_published_at(entry)
             download_url = extract_download_url(entry)
             # Affiche : d'abord une image déjà embarquée dans le flux (gratuit,
             # ex. Hydracker), sinon recherche TMDB pour les titres qui matchent
@@ -385,8 +455,8 @@ def fetch_once():
                 with _lock:
                     conn.execute(
                         """INSERT INTO articles
-                           (feed_name, feed_url, title, url, download_url, summary, published, matched_keywords, quality_ok, poster_url)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (feed_name, feed_url, title, url, download_url, summary, published, published_at, matched_keywords, quality_ok, poster_url)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             feed_name,
                             feed_url,
@@ -395,6 +465,7 @@ def fetch_once():
                             download_url,
                             summary,
                             published,
+                            published_at,
                             ", ".join(matched),
                             1 if quality_ok else 0,
                             poster_url,
@@ -440,11 +511,14 @@ def backfill_posters():
 
 
 def background_loop():
-    init_db()
-    purge_old_articles()
+    """Suppose qu'un premier fetch_once() a déjà été fait de façon synchrone
+    avant le démarrage de ce thread (voir app.py) : on attend donc l'intervalle
+    complet avant le prochain cycle, plutôt que de re-fetcher immédiatement."""
     while True:
         config = load_config()
         interval = config.get("poll_interval_seconds", 300)
+        _set_next_fetch_at(interval)
+        time.sleep(interval)
         try:
             n = fetch_once()
             if n:
@@ -452,7 +526,6 @@ def background_loop():
             purge_old_articles()
         except Exception as exc:
             print(f"[fetch] erreur inattendue: {exc}")
-        time.sleep(interval)
 
 
 def start_background_thread():

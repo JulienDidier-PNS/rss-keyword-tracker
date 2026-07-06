@@ -8,20 +8,26 @@ gestion des flux/mots-clés/filtres de qualité directement depuis l'interface
 ## Les deux pages
 
 - **Correspondances** (`/`) : uniquement les articles qui matchent un
-  mot-clé et passent les filtres de qualité, si configurés.
+  mot-clé (et sa qualité associée, si définie).
 - **Tous les titres** (`/all`) : tous les articles vus dans tes flux, avec un
-  champ de recherche par titre et un filtre par flux. Les articles qui ont
-  matché un mot-clé mais qui ont été écartés par un filtre de qualité y
-  apparaissent avec un badge "qualité ignorée", pour comprendre pourquoi ils
-  ne sont pas dans les correspondances.
+  champ de recherche par titre et un filtre par flux. Les articles dont le
+  texte matche un mot-clé mais pas sa qualité associée y apparaissent avec un
+  badge "qualité ignorée", pour comprendre pourquoi ils ne sont pas dans les
+  correspondances.
 
 Les deux pages affichent une grille d'affiches paginée (24 par page, voir
-`PAGE_SIZE` dans `app.py`), avec les filtres actifs conservés en changeant de
-page.
+`PAGE_SIZE` dans `app.py`), triée par date de publication réelle de l'article
+(la plus récente en haut — pas la date à laquelle on l'a récupérée, pour que
+plusieurs épisodes récupérés dans le même cycle restent dans le bon ordre),
+avec les filtres actifs conservés en changeant de page. L'en-tête affiche
+aussi un décompte en direct avant la prochaine vérification automatique des
+flux. Cliquer sur une carte ouvre une fiche détaillée (affiche en grand,
+date de publication et d'ajout, qualité détectée dans le nom, résumé, lien
+vers la source).
 
-Note : les filtres de qualité s'appliquent aux articles au moment où ils sont
-récupérés — modifier la liste de filtres ne change pas rétroactivement le
-statut des articles déjà enregistrés, seulement les prochains.
+Note : la qualité associée à un mot-clé s'applique aux articles au moment où
+ils sont récupérés — la modifier ne change pas rétroactivement le statut des
+articles déjà enregistrés, seulement les prochains.
 
 ## Sécurité
 
@@ -58,13 +64,6 @@ Deux sources, utilisées dans cet ordre :
 Sans image embarquée ni clé TMDB, l'appli fonctionne normalement, juste sans
 affiche (icône 🎬 à la place).
 
-⚠️ Les `quality_filters` sont globaux à tous les flux : si tu en configures
-(ex. `1080p`) et que tu ajoutes un flux dont les titres ne contiennent pas ce
-genre de tag (ex. Hydracker, qui a des titres déjà propres comme "Badh"), ses
-articles ne passeront jamais le filtre qualité et n'apparaîtront pas dans les
-correspondances. Laisse `quality_filters` vide si tu mélanges des flux
-torrent (noms de release) et des flux "propres" comme Hydracker.
-
 ## Configuration (`config.json`)
 
 `config.json` contient tes flux (parfois avec passkey), tes mots-clés et ta
@@ -78,8 +77,10 @@ sans secrets :
   "feeds": [
     { "name": "Le Monde", "url": "https://www.lemonde.fr/rss/une.xml" }
   ],
-  "keywords": ["intelligence artificielle", "cybersecurite"],
-  "quality_filters": [],
+  "keywords": [
+    { "keyword": "intelligence artificielle", "quality": "" },
+    { "keyword": "house of the dragon", "quality": "1080p" }
+  ],
   "tmdb_api_key": ""
 }
 ```
@@ -96,10 +97,15 @@ Puis personnalise `config.json` (ou utilise la page Configuration du
 dashboard, qui écrit dans ce même fichier).
 
 - `poll_interval_seconds` : fréquence de vérification des flux (300 = 5 minutes).
-- `quality_filters` : termes recherchés dans le nom (résolution, langue,
-  codec…), ex. `1080p`, `MULTi`, `VOSTFR`. Vide = aucun filtrage. Sinon, un
-  article n'apparaît dans les correspondances que si son nom contient au
-  moins un de ces termes (liste blanche).
+- Chaque mot-clé porte sa propre qualité optionnelle (`quality`), choisie
+  parmi une liste prédéfinie (`720p`, `1080p`, `2160p` — voir
+  `QUALITY_CHOICES` dans `app.py` pour l'étendre). Laisse `quality` vide pour
+  accepter le mot-clé dans n'importe quelle qualité (utile pour un flux
+  "propre" comme Hydracker qui n'a pas ce genre de tag dans ses titres). Un
+  article n'est gardé dans les correspondances que si **son mot-clé ET sa
+  qualité associée** (si définie) sont tous les deux présents. Pour accepter
+  plusieurs qualités pour un même mot-clé (ex. 1080p ou 2160p), ajoute-le deux
+  fois avec une qualité différente à chaque fois.
 - Le matching est insensible aux accents, à la casse, et aux séparateurs de
   type release (points/tirets/underscores) : "Cybersécurité" == "cybersecurite",
   et "house of the dragon" matche "House.of.the.Dragon.S02E05.FRENCH.1080p".
@@ -109,6 +115,8 @@ dashboard, qui écrit dans ce même fichier).
 - Le fichier est relu à chaque cycle de vérification : pas besoin de relancer
   l'appli après modification, le changement est pris en compte au prochain
   passage (ou en cliquant sur "Vérifier maintenant" dans le dashboard).
+- Les anciennes config (`"keywords": ["..."]` + `"quality_filters": [...]`
+  séparés) sont migrées automatiquement au premier chargement.
 
 ## Installation sur Windows
 
@@ -175,3 +183,7 @@ projet. Chaque URL n'est enregistrée qu'une fois (déduplication automatique).
   (icône ✕) retient son URL de façon permanente (table `dismissed_urls`) —
   elle ne réapparaîtra jamais, même si le flux la republie plus tard. Utile
   pour écarter un faux positif une bonne fois pour toutes.
+- **Disponible dès le démarrage** : un premier pull est fait de façon
+  synchrone avant que le serveur ne commence à répondre, pour que les
+  résultats soient là dès le premier chargement de la page (pas besoin de
+  cliquer sur "Vérifier maintenant" après un redémarrage).

@@ -1,18 +1,17 @@
 {% macro article_card(a) %}
-  <li class="article-card">
-    <a class="poster-wrap" href="{{ a['url'] }}" target="_blank" rel="noopener">
+  <li class="article-card" data-article='{{ a|tojson }}' onclick="openArticleModal(this)">
+    <div class="poster-wrap">
       {% if a['poster_url'] %}
         <img class="poster" src="{{ a['poster_url'] }}" alt="" loading="lazy">
       {% else %}
         <div class="poster poster-placeholder" aria-hidden="true">🎬</div>
       {% endif %}
-    </a>
+    </div>
 
     <div class="article-body">
-      <a class="article-title" href="{{ a['url'] }}" target="_blank" rel="noopener" title="{{ a['title'] }}">{{ a['title'] }}</a>
+      <span class="article-title" title="{{ a['title'] }}">{{ a['title'] }}</span>
       <div class="article-meta">
         <span class="feed-name">{{ a['feed_name'] }}</span>
-        {% if a['published'] %}<span class="dot">·</span><span>{{ a['published'] }}</span>{% endif %}
       </div>
       {% if a['matched_keywords'] or not a['quality_ok'] %}
         <div class="keywords">
@@ -30,11 +29,11 @@
 
     <div class="article-actions">
       {% if a['download_url'] %}
-        <a class="btn btn-primary btn-small" href="{{ a['download_url'] }}">Télécharger</a>
+        <a class="btn btn-primary btn-small" href="{{ a['download_url'] }}" onclick="event.stopPropagation()">Télécharger</a>
       {% else %}
-        <a class="btn btn-ghost btn-small" href="{{ a['url'] }}" target="_blank" rel="noopener">Voir</a>
+        <a class="btn btn-ghost btn-small" href="{{ a['url'] }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Voir</a>
       {% endif %}
-      <form method="post" action="{{ url_for('delete', article_id=a['id']) }}">
+      <form method="post" action="{{ url_for('delete', article_id=a['id']) }}" onclick="event.stopPropagation()">
         <button type="submit" class="btn btn-icon" title="Supprimer définitivement">✕</button>
       </form>
     </div>

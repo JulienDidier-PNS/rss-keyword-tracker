@@ -16,7 +16,7 @@
 
       <select name="keyword" onchange="this.form.submit()">
         <option value="">Tous les mots-clés</option>
-        {% for kw in configured_keywords %}
+        {% for kw in configured_keywords|map(attribute='keyword')|unique %}
           <option value="{{ kw }}" {% if kw == keyword_filter %}selected{% endif %}>{{ kw }}</option>
         {% endfor %}
       </select>

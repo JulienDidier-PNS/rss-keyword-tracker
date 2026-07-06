@@ -6,18 +6,18 @@ from flask import Flask, flash, redirect, render_template, request, url_for
 from fetcher import (
     add_feed,
     add_keyword,
-    add_quality_filter,
     backfill_posters,
     dismiss_article,
     ensure_config_exists,
+    extract_quality_tags,
     fetch_once,
     get_connection,
+    get_seconds_until_next_fetch,
     init_db,
     load_config,
     purge_old_articles,
     remove_feed,
     remove_keyword,
-    remove_quality_filter,
     set_tmdb_api_key,
     start_background_thread,
 )
@@ -26,6 +26,7 @@ app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
 PAGE_SIZE = 24
+QUALITY_CHOICES = ["720p", "1080p", "2160p"]
 
 # Exécuté à l'import du module : nécessaire pour que ça marche aussi
 # quand l'appli est servie via waitress (waitress-serve app:app), pas
@@ -33,6 +34,11 @@ PAGE_SIZE = 24
 ensure_config_exists()
 init_db()
 purge_old_articles()
+# Premier pull synchrone AVANT que le serveur ne commence à répondre : sans
+# ça, une base vide au démarrage restait vide tant qu'on ne cliquait pas sur
+# "Vérifier maintenant", le premier cycle en arrière-plan n'ayant pas encore
+# eu le temps de tourner.
+fetch_once()
 start_background_thread()
 
 
@@ -42,10 +48,16 @@ def paginate(conn, where_sql, params, page):
     page = min(max(page, 1), total_pages)
     offset = (page - 1) * PAGE_SIZE
 
-    articles = conn.execute(
-        f"SELECT * FROM articles {where_sql} ORDER BY first_seen DESC LIMIT ? OFFSET ?",
+    rows = conn.execute(
+        f"SELECT * FROM articles {where_sql} ORDER BY COALESCE(published_at, first_seen) DESC LIMIT ? OFFSET ?",
         params + [PAGE_SIZE, offset],
     ).fetchall()
+
+    articles = []
+    for row in rows:
+        article = dict(row)
+        article["quality_tags"] = ", ".join(extract_quality_tags(article["title"]))
+        articles.append(article)
 
     return articles, page, total_pages, total_filtered
 
@@ -65,9 +77,10 @@ def common_context():
         "total": total,
         "configured_keywords": config.get("keywords", []),
         "configured_feeds": config.get("feeds", []),
-        "configured_quality_filters": config.get("quality_filters", []),
         "poll_interval": config.get("poll_interval_seconds", 300),
         "tmdb_api_key": config.get("tmdb_api_key", ""),
+        "next_fetch_seconds": get_seconds_until_next_fetch(),
+        "quality_choices": QUALITY_CHOICES,
     }
 
 
@@ -78,7 +91,7 @@ def matches():
     search = request.args.get("q", "").strip()
     page = request.args.get("page", 1, type=int) or 1
 
-    where_sql = "WHERE matched_keywords != '' AND quality_ok = 1"
+    where_sql = "WHERE matched_keywords != ''"
     params = []
     if keyword_filter:
         where_sql += " AND matched_keywords LIKE ?"
@@ -180,16 +193,21 @@ def delete(article_id):
 @app.route("/keywords/add", methods=["POST"])
 def keywords_add():
     keyword = request.form.get("keyword", "")
+    quality = request.form.get("quality", "")
     if keyword.strip():
-        add_keyword(keyword)
-        flash(f'Mot-clé "{keyword.strip()}" ajouté.')
+        add_keyword(keyword, quality)
+        label = keyword.strip()
+        if quality.strip():
+            label += f' ({quality.strip()})'
+        flash(f'Mot-clé "{label}" ajouté.')
     return redirect(request.referrer or url_for("matches"))
 
 
 @app.route("/keywords/delete", methods=["POST"])
 def keywords_delete():
     keyword = request.form.get("keyword", "")
-    remove_keyword(keyword)
+    quality = request.form.get("quality", "")
+    remove_keyword(keyword, quality)
     return redirect(request.referrer or url_for("matches"))
 
 
@@ -209,22 +227,6 @@ def feeds_add():
 def feeds_delete():
     url = request.form.get("url", "")
     remove_feed(url)
-    return redirect(request.referrer or url_for("matches"))
-
-
-@app.route("/quality/add", methods=["POST"])
-def quality_add():
-    value = request.form.get("value", "")
-    if value.strip():
-        add_quality_filter(value)
-        flash(f'Filtre de qualité "{value.strip()}" ajouté.')
-    return redirect(request.referrer or url_for("matches"))
-
-
-@app.route("/quality/delete", methods=["POST"])
-def quality_delete():
-    value = request.form.get("value", "")
-    remove_quality_filter(value)
     return redirect(request.referrer or url_for("matches"))
 
 
