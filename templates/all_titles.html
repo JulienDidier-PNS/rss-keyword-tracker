@@ -3,7 +3,9 @@
 
 {% block content %}
   <section class="toolbar">
-    <form method="get" class="filters">
+    <form method="get" class="search-bar">
+      <input type="search" name="q" value="{{ search }}" placeholder="Rechercher un titre…">
+
       <select name="feed" onchange="this.form.submit()">
         <option value="">Tous les flux</option>
         {% for name in feed_names %}
@@ -11,10 +13,9 @@
         {% endfor %}
       </select>
 
-      <input type="text" name="q" value="{{ search }}" placeholder="Rechercher un titre…" onchange="this.form.submit()">
-
+      <button type="submit" class="btn btn-primary btn-small">Rechercher</button>
       {% if search or feed_filter %}
-        <a href="{{ url_for('all_titles') }}" class="btn btn-ghost">Réinitialiser</a>
+        <a href="{{ url_for('all_titles') }}" class="btn btn-ghost btn-small">Réinitialiser</a>
       {% endif %}
     </form>
 

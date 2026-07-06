@@ -81,15 +81,27 @@ header h1 {
   margin-bottom: 20px;
 }
 
-.filters {
+.search-bar {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
 }
 
-select,
-.filters input[type="text"] {
+.search-bar input[type="search"] {
+  flex: 1 1 220px;
+  min-width: 160px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 0.9rem;
+}
+
+select {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);

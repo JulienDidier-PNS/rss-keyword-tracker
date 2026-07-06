@@ -54,6 +54,7 @@ def matches():
     conn = get_connection()
     keyword_filter = request.args.get("keyword", "").strip()
     feed_filter = request.args.get("feed", "").strip()
+    search = request.args.get("q", "").strip()
 
     query = "SELECT * FROM articles WHERE matched_keywords != '' AND quality_ok = 1"
     params = []
@@ -63,6 +64,9 @@ def matches():
     if feed_filter:
         query += " AND feed_name = ?"
         params.append(feed_filter)
+    if search:
+        query += " AND title LIKE ?"
+        params.append(f"%{search}%")
     query += " ORDER BY first_seen DESC LIMIT 300"
 
     articles = conn.execute(query, params).fetchall()
@@ -74,6 +78,7 @@ def matches():
         articles=articles,
         keyword_filter=keyword_filter,
         feed_filter=feed_filter,
+        search=search,
         **common_context(),
     )
 
