@@ -118,7 +118,62 @@ dashboard, qui écrit dans ce même fichier).
 - Les anciennes config (`"keywords": ["..."]` + `"quality_filters": [...]`
   séparés) sont migrées automatiquement au premier chargement.
 
-## Installation sur Windows
+## Déploiement Docker (recommandé pour un déploiement chez un client)
+
+L'appli est conteneurisée pour pouvoir mettre à jour le code chez un client
+juste en déployant une nouvelle image, **sans jamais toucher à ses données**
+(flux, mots-clés, clé TMDB, articles déjà trouvés). Le principe : le code
+vit dans l'image (jetable, remplacée à chaque mise à jour), les données
+vivent dans `./data/` à côté du `docker-compose.yml` (persistant, jamais
+recréé par un rebuild).
+
+### Premier déploiement
+
+```bash
+docker compose up -d --build
+```
+
+- Crée `./data/config.json` automatiquement (à partir de
+  `config.example.json`) au premier démarrage si absent.
+- Personnalise-le ensuite via la page Configuration du dashboard, ou en
+  éditant directement `./data/config.json` sur l'hôte.
+- Dashboard accessible sur `http://localhost:8000` (ou
+  `http://IP_DU_SERVEUR:8000`).
+
+### Mettre à jour l'appli chez le client (nouvelle version du code)
+
+```bash
+git pull                        # ou dépose les nouveaux fichiers
+docker compose up -d --build    # reconstruit l'image et relance le conteneur
+```
+
+`./data/` n'est jamais recréé ni touché par ce rebuild — `config.json` et
+`articles.db` traversent la mise à jour intacts. Si le serveur du client n'a
+pas accès au dépôt (pas d'internet, pas de registre), transfère l'image
+directement :
+
+```bash
+# Sur ta machine, après le build :
+docker save rss-keyword-tracker:latest -o rss-tracker.tar
+
+# Transfère rss-tracker.tar chez le client, puis :
+docker load -i rss-tracker.tar
+docker compose up -d
+```
+
+### Sauvegarde
+
+Toutes les données persistantes sont dans `./data/` (`config.json`,
+`articles.db`) — une simple copie de ce dossier suffit comme sauvegarde.
+
+### Sans Docker (alternative Windows/Python)
+
+Toujours possible pour un déploiement sans Docker (voir sections suivantes).
+`DATA_DIR` (variable d'environnement, utilisée par le Dockerfile) permet de
+séparer données et code même hors conteneur si besoin ; sans elle, les
+données restent à côté du code comme avant.
+
+## Installation sur Windows (sans Docker)
 
 1. Installer [Python 3.11+](https://www.python.org/downloads/) en cochant
    "Add python.exe to PATH" pendant l'installation.
@@ -134,7 +189,7 @@ dashboard, qui écrit dans ce même fichier).
    ```
 5. Adapter `config.json` à tes flux et mots-clés.
 
-## Lancer l'appli
+## Lancer l'appli (sans Docker)
 
 **En test/dev** (rechargement facile, accessible sur `http://localhost:8000`) :
 ```powershell
@@ -151,9 +206,10 @@ Une fois lancé, ouvrir `http://localhost:8000` (ou `http://IP_DU_SERVEUR:8000`
 depuis un autre appareil du réseau — penser à autoriser le port 8000 dans le
 pare-feu Windows si besoin).
 
-## Faire tourner l'appli en permanence
+## Faire tourner l'appli en permanence (sans Docker)
 
-Deux options simples, du plus léger au plus robuste :
+Avec Docker, `restart: unless-stopped` dans `docker-compose.yml` s'en charge
+déjà. Sans Docker, deux options simples, du plus léger au plus robuste :
 
 - **Planificateur de tâches Windows** : créer une tâche déclenchée "au
   démarrage de l'ordinateur" ou "à l'ouverture de session", qui exécute
@@ -165,8 +221,9 @@ Deux options simples, du plus léger au plus robuste :
 
 ## Données
 
-Les articles trouvés sont stockés dans `articles.db` (SQLite), à la racine du
-projet. Chaque URL n'est enregistrée qu'une fois (déduplication automatique).
+Les articles trouvés sont stockés dans `articles.db` (SQLite) — dans
+`./data/` avec Docker, à la racine du projet sinon. Chaque URL n'est
+enregistrée qu'une fois (déduplication automatique).
 
 - **Persistance** : `articles.db` est un fichier normal qui survit aux
   redémarrages de l'appli (arrêt/relance du process, reboot du serveur…). Il

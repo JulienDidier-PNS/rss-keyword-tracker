@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+articles.db
+articles.db-journal
+config.json
+config.json.bak
+data/
+.git/
+.gitignore
+run.bat
+README.md

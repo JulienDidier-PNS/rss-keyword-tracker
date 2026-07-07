@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -12,9 +13,16 @@ import feedparser
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
+# Séparé du code exprès : en déploiement Docker, DATA_DIR pointe vers un volume
+# monté (ex. /data) qui survit au remplacement de l'image lors d'une mise à
+# jour. Par défaut (hors Docker), les données restent à côté du code comme
+# avant.
+DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+CONFIG_PATH = DATA_DIR / "config.json"
 CONFIG_EXAMPLE_PATH = BASE_DIR / "config.example.json"
-DB_PATH = BASE_DIR / "articles.db"
+DB_PATH = DATA_DIR / "articles.db"
 
 RETENTION_DAYS = 30
 

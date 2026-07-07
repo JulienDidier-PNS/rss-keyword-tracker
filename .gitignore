@@ -3,3 +3,9 @@ articles.db
 __pycache__/
 *.pyc
 config.json
+config.json.bak
+
+# Données Docker persistantes (config.json, articles.db en volume) : jamais
+# versionnées, mais on garde le dossier dans le repo via .gitkeep.
+data/*
+!data/.gitkeep

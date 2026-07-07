@@ -1,0 +1,10 @@
+services:
+  rss-tracker:
+    build: .
+    image: rss-keyword-tracker:latest
+    container_name: rss-keyword-tracker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
