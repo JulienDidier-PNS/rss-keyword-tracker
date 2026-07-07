@@ -127,11 +127,16 @@ vit dans l'image (jetable, remplacée à chaque mise à jour), les données
 vivent dans `./data/` à côté du `docker-compose.yml` (persistant, jamais
 recréé par un rebuild).
 
-### Premier déploiement
+### Premier déploiement (build local, dev/test)
 
 ```bash
 docker compose up -d --build
 ```
+
+Utilise `docker-compose.yml` (build local à partir du code source). Pour un
+déploiement chez un client qui n'a pas le code source, utilise plutôt
+`docker-compose.prod.yml` (voir "Mettre à jour l'appli chez le client"
+ci-dessous), qui récupère l'image déjà construite depuis Docker Hub.
 
 - Crée `./data/config.json` automatiquement (à partir de
   `config.example.json`) au premier démarrage si absent.
@@ -142,24 +147,48 @@ docker compose up -d --build
 
 ### Mettre à jour l'appli chez le client (nouvelle version du code)
 
+Un push sur `main` déclenche automatiquement le build et la publication de
+l'image sur Docker Hub (voir "CI/CD" ci-dessous) — le client n'a jamais
+besoin du code source, juste de `docker-compose.prod.yml` et de son dossier
+`data/`. Mettre à jour chez le client :
+
 ```bash
-git pull                        # ou dépose les nouveaux fichiers
-docker compose up -d --build    # reconstruit l'image et relance le conteneur
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-`./data/` n'est jamais recréé ni touché par ce rebuild — `config.json` et
-`articles.db` traversent la mise à jour intacts. Si le serveur du client n'a
-pas accès au dépôt (pas d'internet, pas de registre), transfère l'image
-directement :
+`./data/` n'est jamais recréé ni touché par cette opération — `config.json`
+et `articles.db` traversent la mise à jour intacts.
+
+Si le serveur du client n'a pas accès à Docker Hub (pas d'internet), transfère
+l'image directement :
 
 ```bash
-# Sur ta machine, après le build :
-docker save rss-keyword-tracker:latest -o rss-tracker.tar
+# Sur ta machine, après avoir récupéré l'image (docker pull ou build local) :
+docker save ikeapencill/rss-tracker:latest -o rss-tracker.tar
 
 # Transfère rss-tracker.tar chez le client, puis :
 docker load -i rss-tracker.tar
-docker compose up -d
+docker compose -f docker-compose.prod.yml up -d
 ```
+
+### CI/CD (build + publication automatique sur Docker Hub)
+
+Le workflow [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml)
+build et publie l'image sur Docker Hub (`ikeapencill/rss-tracker:latest` +
+un tag par commit) à chaque push sur `main`. Deux secrets à configurer une
+seule fois sur GitHub (`Settings` → `Secrets and variables` → `Actions` →
+`New repository secret`) :
+
+- `DOCKERHUB_USERNAME` : ton identifiant Docker Hub.
+- `DOCKERHUB_TOKEN` : un access token Docker Hub (**pas** ton mot de passe) —
+  à créer sur
+  [hub.docker.com/settings/security](https://hub.docker.com/settings/security),
+  "New Access Token", permission "Read & Write".
+
+Une fois les secrets en place, le cycle complet devient : je pousse une
+amélioration sur `main` → l'image se build et se publie toute seule → tu
+lances les deux commandes `pull`/`up -d` ci-dessus chez le client.
 
 ### Sauvegarde
 

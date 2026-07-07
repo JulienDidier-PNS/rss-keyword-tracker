@@ -7,6 +7,9 @@ config.json
 config.json.bak
 data/
 .git/
+.github/
 .gitignore
+.dockerignore
 run.bat
 README.md
+docker-compose*.yml
