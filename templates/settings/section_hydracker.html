@@ -1,0 +1,54 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Hydracker</h2>
+    <p>
+      Le flux Hydracker ne fournit pas les liens de téléchargement directement
+      (contrairement à Torr9). Avec un token API, un bouton « Télécharger »
+      apparaît sur les titres Hydracker et propose les <strong>liens directs</strong>
+      (hébergeurs, résolus au clic) ainsi que les torrents.
+    </p>
+  </div>
+
+  <div class="settings-subhead">
+    <h3>Connexion</h3>
+    <p class="settings-help">
+      Connecte-toi avec tes identifiants Hydracker pour récupérer le token
+      automatiquement — le mot de passe n'est pas conservé, seul le token l'est.
+    </p>
+  </div>
+  <form method="post" action="{{ url_for('settings_hydracker_login') }}" class="settings-form">
+    <label class="settings-field">
+      <span class="settings-label">Email</span>
+      <input type="email" name="hydracker_email" placeholder="Email Hydracker" autocomplete="off" required>
+    </label>
+    <label class="settings-field">
+      <span class="settings-label">Mot de passe</span>
+      <input type="password" name="hydracker_password" placeholder="Mot de passe" autocomplete="off" required>
+    </label>
+    <div class="settings-actions">
+      <button type="submit" class="btn btn-primary">Se connecter et récupérer le token</button>
+    </div>
+  </form>
+
+  <div class="settings-subhead">
+    <h3>Token</h3>
+    <p class="settings-help">
+      {% if hydracker_api_token %}
+        ✅ Token enregistré. Tu peux aussi le coller/effacer manuellement.
+      {% else %}
+        Ou colle un token généré sur
+        <a href="https://hydracker.com/account" target="_blank" rel="noopener">hydracker.com/account</a>
+        (section <em>API tokens</em>).
+      {% endif %}
+    </p>
+  </div>
+  <form method="post" action="{{ url_for('settings_hydracker') }}" class="settings-form">
+    <label class="settings-field">
+      <span class="settings-label">Token API</span>
+      <input type="password" name="hydracker_api_token" value="{{ hydracker_api_token }}" placeholder="Token API Hydracker" autocomplete="off">
+    </label>
+    <div class="settings-actions">
+      <button type="submit" class="btn btn-ghost">Enregistrer le token</button>
+    </div>
+  </form>
+</div>

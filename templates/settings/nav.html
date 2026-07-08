@@ -1,0 +1,6 @@
+<nav class="settings-nav">
+  {% for key, label in settings_sections %}
+    <a href="{{ url_for('settings_section', section=key) }}"
+       class="{{ 'active' if settings_section == key else '' }}">{{ label }}</a>
+  {% endfor %}
+</nav>

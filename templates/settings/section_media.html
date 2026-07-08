@@ -1,0 +1,25 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Affiches / TMDB</h2>
+    <p>
+      Certains flux embarquent déjà une affiche dans chaque article (récupérée
+      automatiquement, gratuitement). Pour les autres, une clé TMDB (gratuite sur
+      <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a>)
+      permet de chercher l'affiche des articles qui matchent un mot-clé.
+    </p>
+  </div>
+
+  <form method="post" action="{{ url_for('settings_tmdb') }}" class="settings-form">
+    <label class="settings-field">
+      <span class="settings-label">Clé API TMDB</span>
+      <input type="text" name="tmdb_api_key" value="{{ tmdb_api_key }}" placeholder="Clé API TMDB (optionnelle)">
+    </label>
+    <div class="settings-actions">
+      <button type="submit" class="btn btn-primary">Enregistrer</button>
+    </div>
+  </form>
+
+  <form method="post" action="{{ url_for('posters_backfill') }}" class="settings-form settings-form-spaced">
+    <button type="submit" class="btn btn-ghost">Récupérer les affiches manquantes</button>
+  </form>
+</div>

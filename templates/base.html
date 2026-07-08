@@ -52,6 +52,12 @@
           <h3>Résumé</h3>
           <p id="modal-summary" class="modal-summary"></p>
         </div>
+        <div id="modal-jd" class="modal-jd" style="display:none">
+          <label class="jd-dest-label" for="modal-jd-dest">
+            Destination JDownloader <span id="modal-jd-type" class="badge"></span>
+          </label>
+          <input type="text" id="modal-jd-dest" class="jd-dest-input" placeholder="Dossier de destination" autocomplete="off">
+        </div>
         <div id="modal-links" class="modal-torrents" style="display:none">
           <h3>Téléchargements directs</h3>
           <button type="button" id="modal-links-load" class="btn btn-primary btn-small">Voir les liens directs</button>
@@ -203,7 +209,7 @@
       btn.type = "button";
       btn.className = "btn btn-primary btn-small";
       btn.textContent = "Récupérer le lien";
-      btn.onclick = function () { resolveHydrackerLink(link.id, action); };
+      btn.onclick = function () { resolveHydrackerLink(link.id, action, link.host); };
       action.appendChild(btn);
 
       row.appendChild(meta);
@@ -211,7 +217,7 @@
       return row;
     }
 
-    function appendLinkError(actionEl, linkId, message) {
+    function appendLinkError(actionEl, linkId, host, message) {
       var span = document.createElement("span");
       span.className = "modal-torrents-status";
       span.textContent = message;
@@ -220,11 +226,31 @@
       retry.type = "button";
       retry.className = "btn btn-ghost btn-small";
       retry.textContent = "Réessayer";
-      retry.onclick = function () { resolveHydrackerLink(linkId, actionEl); };
+      retry.onclick = function () { resolveHydrackerLink(linkId, actionEl, host); };
       actionEl.appendChild(retry);
     }
 
-    function resolveHydrackerLink(linkId, actionEl) {
+    function makeDownloadLink(url, label) {
+      var a = document.createElement("a");
+      a.className = "btn btn-primary btn-small";
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = label;
+      return a;
+    }
+
+    // Décrit COMMENT le lien a été obtenu et s'il est facturé, pour que
+    // l'utilisateur distingue son compte perso (gratuit) du débrideur (payant).
+    function sourceLabel(res, host) {
+      var free = !res.billing || res.billing === "none";
+      if (res.source === "personal") return "via ton compte" + (host ? " " + host : "") + (free ? " · gratuit" : "");
+      if (res.source === "direct_url") return "lien direct" + (host ? " " + host : "") + (free ? " · gratuit" : "");
+      if (res.source === "debrid") return "via débrideur Hydracker" + (free ? "" : " · FACTURÉ (" + res.billing + ")");
+      return res.source || "";
+    }
+
+    function resolveHydrackerLink(linkId, actionEl, host) {
       actionEl.innerHTML = "";
       var pending = document.createElement("button");
       pending.type = "button";
@@ -237,27 +263,51 @@
         .then(function (r) { return r.json(); })
         .then(function (res) {
           actionEl.innerHTML = "";
-          if (!res.ok) { appendLinkError(actionEl, linkId, res.error || "Erreur inconnue."); return; }
+          if (!res.ok) { appendLinkError(actionEl, linkId, host, res.error || "Erreur inconnue."); return; }
+
           var url = res.direct_url || res.raw_url;
           if (!url) {
-            appendLinkError(actionEl, linkId, res.debrid_error ? ("Debrid échoué : " + res.debrid_error) : "Aucun lien disponible.");
+            var why = res.debrid_error ? ("debrid échoué : " + res.debrid_error)
+              : res.requires_account ? ("nécessite ton compte " + (host || "hébergeur") + " configuré sur Hydracker")
+              : "lien indisponible, réessaie";
+            appendLinkError(actionEl, linkId, host, why);
             return;
           }
-          var a = document.createElement("a");
-          a.className = "btn btn-primary btn-small";
-          a.href = url;
-          a.target = "_blank";
-          a.rel = "noopener";
-          a.textContent = res.direct_url ? "Télécharger" : "Ouvrir l'hébergeur";
-          actionEl.appendChild(a);
-          if (res.remaining_today !== undefined && res.remaining_today !== null) {
-            var note = document.createElement("span");
-            note.className = "torrent-sub";
-            note.textContent = "Quota restant : " + res.remaining_today;
-            actionEl.appendChild(note);
+
+          var usesDebrid = res.source === "debrid";
+          var dl = makeDownloadLink(url, "Télécharger");
+          // Le débrideur (potentiellement facturé) est signalé en bouton discret.
+          if (usesDebrid) dl.className = "btn btn-ghost btn-small";
+          actionEl.appendChild(dl);
+
+          // Un second bouton pour le lien direct brut quand il diffère du lien
+          // débridé (permet de garder le lien hébergeur si l'API a débridé).
+          if (res.raw_url && res.direct_url && res.raw_url !== res.direct_url) {
+            var raw = makeDownloadLink(res.raw_url, "Lien direct" + (host ? " (" + host + ")" : ""));
+            actionEl.appendChild(raw);
           }
+
+          // Envoi direct à JDownloader (dans la destination calculée), qui gère
+          // les hébergeurs. On envoie le lien principal (compte perso en priorité).
+          if (window.JD_CONFIG && window.JD_CONFIG.ready) {
+            var jdStatus = document.createElement("span");
+            var jdBtn = document.createElement("button");
+            jdBtn.type = "button";
+            jdBtn.className = "btn btn-primary btn-small";
+            jdBtn.textContent = "→ JDownloader";
+            jdBtn.onclick = function () { sendToJdownloader(url, jdBtn, jdStatus); };
+            actionEl.appendChild(jdBtn);
+            actionEl.appendChild(jdStatus);
+          }
+
+          var bits = [sourceLabel(res, host)];
+          if (res.remaining_today !== undefined && res.remaining_today !== null) bits.push("quota restant : " + res.remaining_today);
+          var note = document.createElement("span");
+          note.className = "torrent-sub" + (usesDebrid && res.billing && res.billing !== "none" ? " torrent-warn" : "");
+          note.textContent = bits.filter(Boolean).join(" · ");
+          actionEl.appendChild(note);
         })
-        .catch(function () { actionEl.innerHTML = ""; appendLinkError(actionEl, linkId, "Erreur réseau."); });
+        .catch(function () { actionEl.innerHTML = ""; appendLinkError(actionEl, linkId, host, "Erreur réseau."); });
     }
 
     function loadHydrackerLinks(articleId) {
@@ -286,6 +336,58 @@
           btn.disabled = false;
           btn.textContent = "Réessayer";
           showTorrentStatus(list, "Erreur réseau.");
+        });
+    }
+
+    window.JD_CONFIG = {
+      ready: {{ 'true' if jd_ready else 'false' }},
+      moviesFolder: {{ jd_movies_folder|tojson }},
+      seriesFolder: {{ jd_series_folder|tojson }},
+      moviesSubfolder: {{ 'true' if jd_movies_subfolder else 'false' }},
+      seriesSubfolder: {{ 'true' if jd_series_subfolder else 'false' }}
+    };
+
+    // Chemin de destination calculé selon le type de média + les réglages.
+    function jdDestination(article) {
+      var cfg = window.JD_CONFIG || {};
+      var isSeries = article.media_type === "series";
+      var base = (isSeries ? cfg.seriesFolder : cfg.moviesFolder) || "";
+      if (!base) return "";
+      base = base.replace(/[\/\\]+$/, "");
+      var sub = isSeries ? cfg.seriesSubfolder : cfg.moviesSubfolder;
+      if (sub && article.clean_title) {
+        var sep = base.indexOf("\\") >= 0 ? "\\" : "/";
+        return base + sep + article.clean_title;
+      }
+      return base;
+    }
+
+    function sendToJdownloader(url, btn, statusEl) {
+      var destEl = document.getElementById("modal-jd-dest");
+      var original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Envoi…";
+      if (statusEl) statusEl.textContent = "";
+      var data = new FormData();
+      data.append("url", url);
+      data.append("destination", destEl ? destEl.value : "");
+      data.append("package", window.JD_CURRENT_PACKAGE || "");
+      fetch("/jdownloader/send", { method: "POST", body: data })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (res.ok) {
+            btn.textContent = "✅ Envoyé à JDownloader";
+            if (statusEl) { statusEl.className = "torrent-sub"; statusEl.textContent = res.destination ? ("→ " + res.destination) : "Téléchargement lancé."; }
+          } else {
+            btn.disabled = false;
+            btn.textContent = original;
+            if (statusEl) { statusEl.className = "modal-torrents-status"; statusEl.textContent = "JDownloader : " + (res.error || "échec"); }
+          }
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = original;
+          if (statusEl) { statusEl.className = "modal-torrents-status"; statusEl.textContent = "Erreur réseau JDownloader."; }
         });
     }
 
@@ -365,6 +467,18 @@
         dl.style.display = "none";
         linksSection.style.display = "none";
         torrentsSection.style.display = "none";
+      }
+
+      // Destination JDownloader : type de média + dossier pré-calculé (éditable).
+      var jdBlock = document.getElementById("modal-jd");
+      if (isHydracker && window.JD_CONFIG && window.JD_CONFIG.ready) {
+        jdBlock.style.display = "block";
+        document.getElementById("modal-jd-type").textContent = data.media_type === "series" ? "Série" : "Film";
+        document.getElementById("modal-jd-dest").value = jdDestination(data);
+        window.JD_CURRENT_PACKAGE = data.clean_title || "";
+      } else {
+        jdBlock.style.display = "none";
+        window.JD_CURRENT_PACKAGE = "";
       }
 
       document.getElementById("modal-open").href = data.url;

@@ -1,0 +1,96 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>JDownloader</h2>
+    <p>
+      Envoie les liens directs vers ton JDownloader via
+      <a href="https://my.jdownloader.org" target="_blank" rel="noopener">My.JDownloader</a>,
+      dans un dossier choisi automatiquement selon le type de média.
+    </p>
+  </div>
+
+  <div class="settings-subhead">
+    <h3>Connexion</h3>
+    <p class="settings-help">
+      Renseigne l'email et le mot de passe du compte lié à ton JDownloader, teste
+      la connexion pour détecter tes appareils, choisis celui à piloter, puis
+      enregistre. Le mot de passe est conservé localement dans
+      <code>config.json</code> (nécessaire pour envoyer les liens).
+    </p>
+  </div>
+  <form method="post" action="{{ url_for('settings_jdownloader') }}" class="settings-form" id="jd-form">
+    <label class="settings-field">
+      <span class="settings-label">Email My.JDownloader</span>
+      <input type="email" name="jd_email" value="{{ jd_email }}" placeholder="email@exemple.com" autocomplete="off">
+    </label>
+    <label class="settings-field">
+      <span class="settings-label">Mot de passe</span>
+      <input type="password" name="jd_password" placeholder="{{ 'Mot de passe (déjà enregistré)' if jd_password_set else 'Mot de passe' }}" autocomplete="off">
+    </label>
+    <label class="settings-field">
+      <span class="settings-label">Appareil JDownloader</span>
+      <input type="text" name="jd_device" value="{{ jd_device }}" placeholder="Nom de l'appareil" list="jd-devices">
+      <datalist id="jd-devices"></datalist>
+    </label>
+    <div class="settings-actions">
+      <button type="button" class="btn btn-ghost" onclick="testJdownloader()">Tester la connexion</button>
+      <button type="submit" class="btn btn-primary">Enregistrer</button>
+    </div>
+  </form>
+  <p id="jd-test-result" class="settings-help"></p>
+
+  <div class="settings-subhead">
+    <h3>Dossiers de destination</h3>
+    <p class="settings-help">
+      Chemins tels que vus par la machine où tourne JDownloader. Coche
+      « sous-dossier » pour créer un dossier au nom du média sous le dossier de
+      base ; décoche pour envoyer directement dans un dossier existant.
+    </p>
+  </div>
+  <form method="post" action="{{ url_for('settings_jdownloader_paths') }}" class="settings-form">
+    <div class="settings-field">
+      <span class="settings-label">🎬 Films</span>
+      <div class="settings-path">
+        <input type="text" name="jd_movies_folder" value="{{ jd_movies_folder }}" placeholder="/chemin/vers/Films">
+        <label class="jd-check"><input type="checkbox" name="jd_movies_subfolder" {{ 'checked' if jd_movies_subfolder else '' }}> sous-dossier</label>
+      </div>
+    </div>
+    <div class="settings-field">
+      <span class="settings-label">📺 Séries</span>
+      <div class="settings-path">
+        <input type="text" name="jd_series_folder" value="{{ jd_series_folder }}" placeholder="/chemin/vers/Séries">
+        <label class="jd-check"><input type="checkbox" name="jd_series_subfolder" {{ 'checked' if jd_series_subfolder else '' }}> sous-dossier</label>
+      </div>
+    </div>
+    <div class="settings-actions">
+      <button type="submit" class="btn btn-primary">Enregistrer les dossiers</button>
+    </div>
+  </form>
+</div>
+
+<script>
+  function testJdownloader() {
+    var form = document.getElementById("jd-form");
+    var out = document.getElementById("jd-test-result");
+    out.textContent = "Test de connexion…";
+    var data = new FormData();
+    data.append("jd_email", form.jd_email.value);
+    data.append("jd_password", form.jd_password.value);
+    fetch("{{ url_for('jdownloader_test') }}", { method: "POST", body: data })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (!res.ok) { out.textContent = "❌ " + (res.error || "Échec de la connexion."); return; }
+        if (!res.devices.length) { out.textContent = "✅ Connecté, mais aucun appareil JDownloader trouvé (JD est-il lancé et lié au compte ?)."; return; }
+        var names = res.devices.map(function (d) { return d.name; });
+        out.textContent = "✅ Connecté. Appareil(s) : " + names.join(", ");
+        var dl = document.getElementById("jd-devices");
+        dl.innerHTML = "";
+        names.forEach(function (n) {
+          var opt = document.createElement("option");
+          opt.value = n;
+          dl.appendChild(opt);
+        });
+        if (names.length === 1 && !form.jd_device.value) form.jd_device.value = names[0];
+      })
+      .catch(function () { out.textContent = "❌ Erreur réseau lors du test."; });
+  }
+</script>

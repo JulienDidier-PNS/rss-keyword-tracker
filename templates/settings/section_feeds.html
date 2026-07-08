@@ -1,0 +1,29 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Flux RSS</h2>
+    <p>Les sources surveillées. Chaque flux est relu à chaque cycle de vérification.</p>
+  </div>
+
+  <ul class="settings-list">
+    {% for feed in configured_feeds %}
+      <li>
+        <div class="settings-list-main">
+          <span class="settings-list-title">{{ feed.name }}</span>
+          <span class="settings-list-sub" title="{{ feed.url }}">{{ feed.url }}</span>
+        </div>
+        <form method="post" action="{{ url_for('feeds_delete') }}">
+          <input type="hidden" name="url" value="{{ feed.url }}">
+          <button type="submit" class="btn btn-icon" title="Supprimer ce flux">✕</button>
+        </form>
+      </li>
+    {% else %}
+      <li class="settings-empty">Aucun flux configuré.</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="{{ url_for('feeds_add') }}" class="settings-form settings-form-row">
+    <input type="text" name="name" placeholder="Nom du flux (optionnel)">
+    <input type="url" name="url" placeholder="https://…/rss.xml" required>
+    <button type="submit" class="btn btn-primary">Ajouter</button>
+  </form>
+</div>

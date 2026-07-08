@@ -198,6 +198,29 @@ def set_hydracker_api_token(token):
     save_config(config)
 
 
+def set_jdownloader_settings(email, password, device):
+    """Identifiants My.JDownloader + appareil ciblé. Le mot de passe est
+    conservé dans config.json (fichier local) car nécessaire pour rouvrir une
+    session à chaque envoi ; passer password=None laisse l'existant inchangé."""
+    config = load_config()
+    config["jd_email"] = (email or "").strip()
+    if password is not None:
+        config["jd_password"] = password
+    config["jd_device"] = (device or "").strip()
+    save_config(config)
+
+
+def set_jdownloader_paths(movies_folder, series_folder, movies_subfolder, series_subfolder):
+    """Dossiers de destination JDownloader par type de média, et si un
+    sous-dossier au nom du média doit être créé sous le dossier de base."""
+    config = load_config()
+    config["jd_movies_folder"] = (movies_folder or "").strip()
+    config["jd_series_folder"] = (series_folder or "").strip()
+    config["jd_movies_subfolder"] = bool(movies_subfolder)
+    config["jd_series_subfolder"] = bool(series_subfolder)
+    save_config(config)
+
+
 def extract_hydracker_title_id(url):
     """Id du titre Hydracker extrait d'un lien de fiche, ex.
     "https://hydracker.com/titles/108276/play-dirty" -> "108276". None si le
@@ -447,14 +470,29 @@ def resolve_hydracker_link(link_id, token):
     # Champs à la racine (le schéma OpenAPI les place à tort sous `data`).
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     lien = data.get("lien") or {}
+    host = lien.get("host") or {}
     access = data.get("access") or {}
     result = {
-        "direct_url": data.get("directDL"),
+        # raw_url = lien original chez l'hébergeur (à utiliser avec son propre
+        # abonnement, sans passer par le débrideur Hydracker).
         "raw_url": data.get("raw_url"),
+        # direct_url = lien résolu par le débrideur Hydracker (identique à raw_url
+        # quand aucun débridage n'a lieu).
+        "direct_url": data.get("directDL"),
         "debrided": bool(data.get("debrided")),
         "debrid_error": data.get("debrid_error"),
+        "host": host.get("name") or "",
         "quality": _qual_label(lien),
         "size": _format_size(lien.get("taille")),
+        "requires_account": bool(data.get("requires_account")),
+        # Politique appliquée par Hydracker :
+        #  - source "personal"   : lien généré via TON compte hébergeur (abonnement) — gratuit
+        #  - source "direct_url" : lien direct public — gratuit
+        #  - source "debrid"     : passé par le débrideur Hydracker — facturé (gb_pack)
+        "source": access.get("source"),
+        "billing": access.get("billing"),
+        "charged_bytes": access.get("charged_bytes"),
+        "tier": access.get("tier"),
         "remaining_today": access.get("remaining_today"),
     }
     return result, None
@@ -691,6 +729,35 @@ def clean_release_title(raw_title):
         text = text[: min(cut_points)]
 
     return text.strip(" -")
+
+
+def detect_media_type(title, feed_name=""):
+    """Devine si un article est une série ou un film. Priorité au motif
+    saison/épisode (SxxExx) dans le titre, sinon on se base sur le nom du flux
+    ("Séries"/"Series" vs "Films"). Renvoie "series" ou "movie"."""
+    if _SEASON_EPISODE_RE.search(title or ""):
+        return "series"
+    haystack = normalize(feed_name)  # accents retirés : "Séries" -> "series"
+    if "seri" in haystack:
+        return "series"
+    return "movie"
+
+
+def _sanitize_folder(name):
+    """Nettoie un nom pour en faire un nom de dossier valide (retire les
+    caractères interdits sous Windows/Unix)."""
+    return re.sub(r'[\\/:*?"<>|]+', " ", name or "").strip().rstrip(".")
+
+
+def clean_media_name(title, media_type):
+    """Nom de dossier propre pour un média, ex. "Play Dirty (2025)" pour un
+    film (avec l'année si présente), "House of the Dragon" pour une série."""
+    name = clean_release_title(title)
+    if media_type == "movie":
+        year = _YEAR_RE.search(title or "")
+        if year and year.group(0) not in name:
+            name = f"{name} ({year.group(0)})"
+    return _sanitize_folder(name)
 
 
 def fetch_poster_from_tmdb(query, api_key):

@@ -2,3 +2,4 @@ Flask==3.0.3
 feedparser==6.0.11
 waitress==3.0.0
 requests==2.32.3
+myjdapi==1.1.10

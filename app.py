@@ -3,10 +3,13 @@ import secrets
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
+from jdownloader import jd_send_links, jd_test_connection
 from fetcher import (
     add_feed,
     add_keyword,
     backfill_posters,
+    clean_media_name,
+    detect_media_type,
     dismiss_article,
     ensure_config_exists,
     extract_hydracker_title_id,
@@ -24,6 +27,8 @@ from fetcher import (
     remove_keyword,
     resolve_hydracker_link,
     set_hydracker_api_token,
+    set_jdownloader_paths,
+    set_jdownloader_settings,
     set_tmdb_api_key,
     start_background_thread,
 )
@@ -63,6 +68,8 @@ def paginate(conn, where_sql, params, page):
     for row in rows:
         article = dict(row)
         article["quality_tags"] = ", ".join(extract_quality_tags(article["title"]))
+        article["media_type"] = detect_media_type(article["title"], article.get("feed_name", ""))
+        article["clean_title"] = clean_media_name(article["title"], article["media_type"])
         articles.append(article)
 
     return articles, page, total_pages, total_filtered
@@ -86,6 +93,14 @@ def common_context():
         "poll_interval": config.get("poll_interval_seconds", 300),
         "tmdb_api_key": config.get("tmdb_api_key", ""),
         "hydracker_api_token": config.get("hydracker_api_token", ""),
+        "jd_email": config.get("jd_email", ""),
+        "jd_device": config.get("jd_device", ""),
+        "jd_password_set": bool(config.get("jd_password", "")),
+        "jd_movies_folder": config.get("jd_movies_folder", ""),
+        "jd_series_folder": config.get("jd_series_folder", ""),
+        "jd_movies_subfolder": config.get("jd_movies_subfolder", True),
+        "jd_series_subfolder": config.get("jd_series_subfolder", True),
+        "jd_ready": bool(config.get("jd_email") and config.get("jd_password") and config.get("jd_device")),
         "next_fetch_seconds": get_seconds_until_next_fetch(),
         "quality_choices": QUALITY_CHOICES,
     }
@@ -176,11 +191,31 @@ def all_titles():
     )
 
 
+# Sections de configuration, chacune sur sa propre sous-page pleine largeur.
+SETTINGS_SECTIONS = [
+    ("feeds", "Flux RSS"),
+    ("keywords", "Mots-clés"),
+    ("media", "Affiches / TMDB"),
+    ("hydracker", "Hydracker"),
+    ("jdownloader", "JDownloader"),
+]
+SETTINGS_SECTION_KEYS = {key for key, _ in SETTINGS_SECTIONS}
+
+
 @app.route("/settings")
 def settings():
+    return redirect(url_for("settings_section", section="feeds"))
+
+
+@app.route("/settings/section/<section>")
+def settings_section(section):
+    if section not in SETTINGS_SECTION_KEYS:
+        section = "feeds"
     return render_template(
-        "settings.html",
+        "settings/page.html",
         active_tab="settings",
+        settings_section=section,
+        settings_sections=SETTINGS_SECTIONS,
         **common_context(),
     )
 
@@ -266,6 +301,71 @@ def settings_hydracker_login():
         set_hydracker_api_token(token)
         flash("Connecté à Hydracker : token récupéré et enregistré.")
     return redirect(request.referrer or url_for("settings"))
+
+
+@app.route("/settings/jdownloader", methods=["POST"])
+def settings_jdownloader():
+    email = request.form.get("jd_email", "")
+    password = request.form.get("jd_password", "")
+    device = request.form.get("jd_device", "")
+    # Champ mot de passe laissé vide = on garde celui déjà enregistré.
+    if not password:
+        password = None
+    set_jdownloader_settings(email, password, device)
+    flash("Paramètres My.JDownloader enregistrés.")
+    return redirect(request.referrer or url_for("settings"))
+
+
+@app.route("/jdownloader/test", methods=["POST"])
+def jdownloader_test():
+    """Teste la connexion My.JDownloader et renvoie la liste des appareils.
+    Utilise les identifiants saisis dans le formulaire, ou ceux déjà
+    enregistrés si le champ est laissé vide."""
+    config = load_config()
+    email = request.form.get("jd_email", "").strip() or config.get("jd_email", "")
+    password = request.form.get("jd_password", "") or config.get("jd_password", "")
+    devices, error = jd_test_connection(email, password)
+    if error:
+        return {"ok": False, "error": error, "devices": []}
+    return {"ok": True, "devices": [{"name": d.get("name"), "type": d.get("type")} for d in devices]}
+
+
+@app.route("/settings/jdownloader-paths", methods=["POST"])
+def settings_jdownloader_paths():
+    set_jdownloader_paths(
+        request.form.get("jd_movies_folder", ""),
+        request.form.get("jd_series_folder", ""),
+        request.form.get("jd_movies_subfolder") == "on",
+        request.form.get("jd_series_subfolder") == "on",
+    )
+    flash("Dossiers JDownloader enregistrés.")
+    return redirect(request.referrer or url_for("settings"))
+
+
+@app.route("/jdownloader/send", methods=["POST"])
+def jdownloader_send():
+    """Envoie un lien (déjà résolu côté client) à JDownloader, dans le dossier
+    de destination fourni, et démarre le téléchargement."""
+    config = load_config()
+    email = config.get("jd_email", "")
+    password = config.get("jd_password", "")
+    device = config.get("jd_device", "")
+    if not (email and password and device):
+        return {"ok": False, "error": "JDownloader non configuré (Configuration → JDownloader)."}
+
+    url = request.form.get("url", "").strip()
+    if not url:
+        return {"ok": False, "error": "Aucun lien à envoyer."}
+    destination = request.form.get("destination", "").strip() or None
+    package = request.form.get("package", "").strip() or None
+
+    ok, error = jd_send_links(
+        email, password, device, url,
+        package_name=package, destination_folder=destination, autostart=True,
+    )
+    if not ok:
+        return {"ok": False, "error": error}
+    return {"ok": True, "destination": destination or ""}
 
 
 @app.route("/article/<int:article_id>/torrents")

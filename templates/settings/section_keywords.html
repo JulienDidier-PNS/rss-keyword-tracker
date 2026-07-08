@@ -1,0 +1,39 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Mots-clés</h2>
+    <p>
+      La qualité (optionnelle) est propre à chaque mot-clé, ex.
+      <code>house of the dragon</code> + <code>1080p</code> : seules les releases
+      contenant à la fois le mot-clé et cette qualité sont gardées dans les
+      correspondances. Laisse « Toutes qualités » pour tout accepter. Ajoute le
+      même mot-clé plusieurs fois avec des qualités différentes pour en accepter
+      plusieurs (ex. 1080p et 2160p).
+    </p>
+  </div>
+
+  <div class="settings-chips">
+    {% for kw in configured_keywords %}
+      <span class="chip">
+        {{ kw.keyword }}{% if kw.quality %} · {{ kw.quality }}{% endif %}
+        <form method="post" action="{{ url_for('keywords_delete') }}">
+          <input type="hidden" name="keyword" value="{{ kw.keyword }}">
+          <input type="hidden" name="quality" value="{{ kw.quality }}">
+          <button type="submit" class="chip-remove" title="Supprimer ce mot-clé">✕</button>
+        </form>
+      </span>
+    {% else %}
+      <p class="settings-empty">Aucun mot-clé configuré.</p>
+    {% endfor %}
+  </div>
+
+  <form method="post" action="{{ url_for('keywords_add') }}" class="settings-form settings-form-row">
+    <input type="text" name="keyword" placeholder="Mot-clé" required>
+    <select name="quality">
+      <option value="">Toutes qualités</option>
+      {% for q in quality_choices %}
+        <option value="{{ q }}">{{ q }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-primary">Ajouter</button>
+  </form>
+</div>
