@@ -991,3 +991,76 @@ footer p { margin: 4px 0; }
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+/* ===== Titres suivis (TMDB) ===== */
+.tmdb-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 4px;
+}
+.tmdb-result,
+.tracked-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.tmdb-poster,
+.tracked-poster {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 69px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--badge-bg);
+}
+.tmdb-poster-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+}
+.tmdb-info,
+.tracked-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tmdb-title,
+.tracked-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tmdb-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tmdb-actions select {
+  padding: 6px 8px;
+}
+.tracked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tracked-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tracked-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+}

@@ -593,6 +593,19 @@ def init_db():
         )
         """
     )
+    # Cache de résolution TMDB pour les items non-Hydracker (ex. Torr9) : on
+    # associe un titre de release nettoyé à son (tmdb_id, type), pour ne pas
+    # réinterroger TMDB à chaque fetch. tmdb_id NULL = "cherché, rien trouvé".
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS title_tmdb_cache (
+            clean_title TEXT PRIMARY KEY COLLATE NOCASE,
+            tmdb_id INTEGER,
+            tmdb_type TEXT,
+            fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     # Migrations pour les bases créées avant l'ajout de ces colonnes.
     existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(articles)")}
     if "download_url" not in existing_columns:
@@ -663,6 +676,250 @@ def match_keyword_entries(title, summary, keyword_entries):
             confirmed.append(keyword)
 
     return confirmed, quality_rejected
+
+
+# ===== Suivi de titres par référence TMDB (matching exact) =====
+
+def tmdb_search(query, api_key):
+    """Recherche TMDB (films + séries) pour la config. Renvoie (résultats, err).
+    Chaque résultat : {tmdb_id, type ("movie"/"tv"), title, year, poster_url}."""
+    query = (query or "").strip()
+    if not query:
+        return [], None
+    if not api_key:
+        return [], "Aucune clé TMDB configurée (Configuration → Affiches / TMDB)."
+    try:
+        response = requests.get(
+            TMDB_SEARCH_URL,
+            params={"api_key": api_key, "query": query, "language": "fr-FR", "include_adult": "false"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return [], f"Erreur TMDB : {exc}"
+
+    results = []
+    for item in data.get("results", []):
+        media_type = item.get("media_type")
+        if media_type not in ("movie", "tv"):
+            continue
+        date = item.get("release_date") or item.get("first_air_date") or ""
+        poster = item.get("poster_path")
+        results.append(
+            {
+                "tmdb_id": item.get("id"),
+                "type": media_type,
+                "title": item.get("title") or item.get("name") or "",
+                "year": (date or "")[:4],
+                "poster_url": f"{TMDB_IMAGE_BASE}{poster}" if poster else None,
+            }
+        )
+    return results, None
+
+
+def _resolve_hydracker_id(tmdb_id, tmdb_type, token):
+    """Id du titre Hydracker correspondant à un (tmdb_id, type), via
+    GET /titles?tmdb_id=. None si Hydracker ne connaît pas ce titre ou si le
+    token manque. Permet de matcher les items Hydracker par leur id (dans le
+    lien RSS) sans résoudre le tmdb de chaque item un par un."""
+    if not token or not tmdb_id:
+        return None
+    hydra_type = "series" if tmdb_type == "tv" else "movie"
+    try:
+        response = requests.get(
+            f"{HYDRACKER_API_BASE}/titles",
+            params={"tmdb_id": tmdb_id},
+            headers=_hydracker_headers(token),
+            timeout=10,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        rows = (response.json().get("pagination") or {}).get("data") or []
+    except Exception:
+        return None
+
+    for row in rows:
+        if str(row.get("tmdb_id")) == str(tmdb_id) and row.get("type") == hydra_type:
+            return row.get("id")
+    # Repli : bon tmdb_id mais type non concordant (ex. champ type absent).
+    for row in rows:
+        if str(row.get("tmdb_id")) == str(tmdb_id):
+            return row.get("id")
+    return None
+
+
+def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality=""):
+    """Ajoute un titre suivi (dédup par tmdb_id + type + qualité) et résout tout
+    de suite son id Hydracker."""
+    try:
+        tmdb_id = int(tmdb_id)
+    except (TypeError, ValueError):
+        return
+    quality = (quality or "").strip()
+    config = load_config()
+    tracked = config.setdefault("tracked_titles", [])
+    for t in tracked:
+        if t.get("tmdb_id") == tmdb_id and t.get("type") == ttype and (t.get("quality") or "") == quality:
+            return
+    token = config.get("hydracker_api_token", "").strip()
+    tracked.append(
+        {
+            "tmdb_id": tmdb_id,
+            "type": ttype,
+            "title": title,
+            "year": year,
+            "poster": poster,
+            "quality": quality,
+            "hydracker_id": _resolve_hydracker_id(tmdb_id, ttype, token),
+        }
+    )
+    save_config(config)
+
+
+def remove_tracked_title(tmdb_id, ttype, quality=""):
+    try:
+        tmdb_id = int(tmdb_id)
+    except (TypeError, ValueError):
+        return
+    quality = (quality or "").strip()
+    config = load_config()
+    config["tracked_titles"] = [
+        t for t in config.get("tracked_titles", [])
+        if not (t.get("tmdb_id") == tmdb_id and t.get("type") == ttype and (t.get("quality") or "") == quality)
+    ]
+    save_config(config)
+
+
+def refresh_tracked_hydracker_ids():
+    """Re-résout l'id Hydracker des titres suivis qui n'en ont pas encore (titre
+    pas encore présent sur Hydracker au moment de l'ajout). Appelé périodiquement."""
+    config = load_config()
+    tracked = config.get("tracked_titles", [])
+    token = config.get("hydracker_api_token", "").strip()
+    if not token:
+        return
+    changed = False
+    for t in tracked:
+        if t.get("hydracker_id") is None:
+            hid = _resolve_hydracker_id(t.get("tmdb_id"), t.get("type"), token)
+            if hid is not None:
+                t["hydracker_id"] = hid
+                changed = True
+    if changed:
+        save_config(config)
+
+
+def resolve_title_tmdb(raw_title, api_key):
+    """(tmdb_id, tmdb_type) d'un titre de release non-Hydracker via recherche
+    TMDB sur le titre nettoyé (préférence à l'année du titre si présente). Mis en
+    cache (y compris les non-trouvés). (None, None) si rien/erreur."""
+    if not api_key:
+        return None, None
+    clean = clean_release_title(raw_title)
+    if not clean:
+        return None, None
+
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT tmdb_id, tmdb_type FROM title_tmdb_cache WHERE clean_title = ? COLLATE NOCASE",
+        (clean,),
+    ).fetchone()
+    if row is not None:
+        conn.close()
+        return row["tmdb_id"], row["tmdb_type"]
+
+    results, _ = tmdb_search(clean, api_key)
+    tmdb_id, tmdb_type = None, None
+    if results:
+        chosen = results[0]
+        year = _YEAR_RE.search(raw_title or "")
+        if year:
+            for r in results:
+                if r["year"] == year.group(0):
+                    chosen = r
+                    break
+        tmdb_id, tmdb_type = chosen["tmdb_id"], chosen["type"]
+
+    with _lock:
+        conn.execute(
+            "INSERT OR IGNORE INTO title_tmdb_cache (clean_title, tmdb_id, tmdb_type) VALUES (?, ?, ?)",
+            (clean, tmdb_id, tmdb_type),
+        )
+        conn.commit()
+    conn.close()
+    return tmdb_id, tmdb_type
+
+
+def match_tracked_titles(title, summary, link, tracked_titles, tmdb_key):
+    """Identifie exactement à quel(s) titre(s) suivi(s) correspond un article.
+
+    - Item Hydracker (id présent dans le lien) : correspond si son id Hydracker
+      égale le `hydracker_id` résolu d'un titre suivi. Exact, aucun appel.
+    - Item non-Hydracker (ex. Torr9) : pré-filtre par le nom du titre suivi (pour
+      éviter une recherche TMDB inutile), puis confirmation exacte par (tmdb_id,
+      type) résolu du titre de release.
+
+    Renvoie (confirmed, quality_rejected) : listes de noms de titres suivis.
+    Un titre avec une qualité imposée n'est confirmé que si cette qualité figure
+    aussi dans le titre/résumé (sinon compté comme "qualité refusée")."""
+    confirmed = []
+    quality_rejected = []
+    if not tracked_titles:
+        return confirmed, quality_rejected
+
+    hydra_id = extract_hydracker_title_id(link)
+    haystack = normalize(f"{title} {summary}")
+    article_tmdb = None  # (id, type) résolu à la demande, une seule fois par article
+
+    for t in tracked_titles:
+        if hydra_id is not None:
+            identity = t.get("hydracker_id") is not None and str(t["hydracker_id"]) == str(hydra_id)
+        else:
+            name = normalize(t.get("title", ""))
+            identity = False
+            if name and name in haystack:
+                if article_tmdb is None:
+                    article_tmdb = resolve_title_tmdb(title, tmdb_key)
+                identity = (
+                    article_tmdb[0] is not None
+                    and article_tmdb[0] == t.get("tmdb_id")
+                    and article_tmdb[1] == t.get("type")
+                )
+        if not identity:
+            continue
+
+        quality = (t.get("quality") or "").strip()
+        if quality and normalize(quality) not in haystack:
+            quality_rejected.append(t.get("title"))
+        else:
+            confirmed.append(t.get("title"))
+
+    return confirmed, quality_rejected
+
+
+def rematch_all():
+    """Recalcule les correspondances de tous les articles stockés selon les
+    titres suivis actuels. Appelé après ajout/suppression d'un titre suivi pour
+    que les articles déjà en base (re)basculent dans/hors des Correspondances."""
+    config = load_config()
+    tracked = config.get("tracked_titles", [])
+    tmdb_key = config.get("tmdb_api_key", "").strip()
+
+    conn = get_connection()
+    rows = conn.execute("SELECT id, title, summary, url FROM articles").fetchall()
+    for row in rows:
+        confirmed, rejected = match_tracked_titles(
+            row["title"], row["summary"] or "", row["url"] or "", tracked, tmdb_key
+        )
+        quality_ok = 0 if (rejected and not confirmed) else 1
+        with _lock:
+            conn.execute(
+                "UPDATE articles SET matched_keywords = ?, quality_ok = ? WHERE id = ?",
+                (", ".join(confirmed), quality_ok, row["id"]),
+            )
+            conn.commit()
+    conn.close()
 
 
 def extract_download_url(entry):
@@ -822,7 +1079,8 @@ def fetch_once():
     Relit config.json à chaque appel : éditer le fichier suffit, pas besoin de
     relancer l'appli."""
     config = load_config()
-    keyword_entries = config.get("keywords", [])
+    tracked_titles = config.get("tracked_titles", [])
+    tmdb_key = config.get("tmdb_api_key", "").strip()
     feeds = config.get("feeds", [])
 
     conn = get_connection()
@@ -846,14 +1104,14 @@ def fetch_once():
             if is_dismissed(conn, link):
                 continue
 
-            matched, quality_rejected = match_keyword_entries(title, summary, keyword_entries)
-            quality_ok = not quality_rejected
+            matched, quality_rejected = match_tracked_titles(title, summary, link, tracked_titles, tmdb_key)
+            quality_ok = not quality_rejected or bool(matched)
             published = entry.get("published", entry.get("updated", ""))
             published_at = extract_published_at(entry)
             download_url = extract_download_url(entry)
             # Affiche : d'abord une image déjà embarquée dans le flux (gratuit,
             # ex. Hydracker), sinon recherche TMDB pour les titres qui matchent
-            # un mot-clé (pour limiter les appels API).
+            # un titre suivi (pour limiter les appels API).
             poster_url = extract_poster_from_summary(summary)
             if not poster_url and matched:
                 poster_url = get_poster_url(title, config)
@@ -927,6 +1185,9 @@ def background_loop():
         _set_next_fetch_at(interval)
         time.sleep(interval)
         try:
+            # Résout l'id Hydracker des titres suivis encore non résolus (titre
+            # devenu disponible sur Hydracker depuis son ajout).
+            refresh_tracked_hydracker_ids()
             n = fetch_once()
             if n:
                 print(f"[fetch] {n} nouvel(le)(s) article(s) trouvé(s)")

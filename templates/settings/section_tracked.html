@@ -1,0 +1,139 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Titres suivis (TMDB)</h2>
+    <p>
+      Cherche un film ou une série et choisis <strong>l'entrée exacte</strong> :
+      le matching se fait ensuite sur sa référence TMDB, sans faux positif.
+      Hydracker est identifié en exact ; pour Torr9, le nom de release est
+      confirmé via TMDB. Ajoute le même titre plusieurs fois avec des qualités
+      différentes pour n'en garder que certaines.
+    </p>
+  </div>
+
+  <div class="settings-form settings-form-row">
+    <input type="text" id="tmdb-q" placeholder="Titre d'un film ou d'une série…"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();searchTmdb();}">
+    <button type="button" class="btn btn-primary" onclick="searchTmdb()">Rechercher</button>
+  </div>
+  <div id="tmdb-results" class="tmdb-results"></div>
+
+  <div class="settings-subhead">
+    <h3>Titres suivis</h3>
+  </div>
+  <div class="tracked-list">
+    {% for t in tracked_titles %}
+      <div class="tracked-item">
+        {% if t.poster %}
+          <img class="tracked-poster" src="{{ t.poster }}" alt="" loading="lazy">
+        {% else %}
+          <div class="tracked-poster tmdb-poster-ph">{{ '📺' if t.type == 'tv' else '🎬' }}</div>
+        {% endif %}
+        <div class="tracked-info">
+          <div class="tracked-title">{{ t.title }}{% if t.year %} ({{ t.year }}){% endif %}</div>
+          <div class="tracked-sub">
+            <span class="badge">{{ 'Série' if t.type == 'tv' else 'Film' }}</span>
+            {% if t.quality %}<span class="badge">{{ t.quality }}</span>{% endif %}
+            <span class="tracked-meta">TMDB #{{ t.tmdb_id }}{% if t.hydracker_id %} · Hydracker ✓{% endif %}</span>
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('tracked_delete') }}">
+          <input type="hidden" name="tmdb_id" value="{{ t.tmdb_id }}">
+          <input type="hidden" name="type" value="{{ t.type }}">
+          <input type="hidden" name="quality" value="{{ t.quality }}">
+          <button type="submit" class="btn btn-icon" title="Retirer ce titre">✕</button>
+        </form>
+      </div>
+    {% else %}
+      <p class="settings-empty">Aucun titre suivi. Cherche un film ou une série ci-dessus.</p>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+  var QUALITIES = {{ quality_choices|tojson }};
+
+  function searchTmdb() {
+    var q = document.getElementById("tmdb-q").value;
+    var out = document.getElementById("tmdb-results");
+    if (!q.trim()) { out.innerHTML = ""; return; }
+    out.innerHTML = '<p class="settings-help">Recherche…</p>';
+    fetch("{{ url_for('tmdb_search_route') }}?q=" + encodeURIComponent(q))
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (!res.ok) { out.innerHTML = '<p class="settings-help">' + (res.error || "Erreur.") + "</p>"; return; }
+        if (!res.results.length) { out.innerHTML = '<p class="settings-help">Aucun résultat.</p>'; return; }
+        out.innerHTML = "";
+        res.results.forEach(function (r) { out.appendChild(buildTmdbResult(r)); });
+      })
+      .catch(function () { out.innerHTML = '<p class="settings-help">Erreur réseau.</p>'; });
+  }
+
+  function buildTmdbResult(r) {
+    var row = document.createElement("div");
+    row.className = "tmdb-result";
+
+    if (r.poster_url) {
+      var img = document.createElement("img");
+      img.className = "tmdb-poster";
+      img.src = r.poster_url;
+      img.alt = "";
+      row.appendChild(img);
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "tmdb-poster tmdb-poster-ph";
+      ph.textContent = r.type === "tv" ? "📺" : "🎬";
+      row.appendChild(ph);
+    }
+
+    var info = document.createElement("div");
+    info.className = "tmdb-info";
+    var title = document.createElement("div");
+    title.className = "tmdb-title";
+    title.textContent = r.title + (r.year ? " (" + r.year + ")" : "");
+    var badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = r.type === "tv" ? "Série" : "Film";
+    title.appendChild(document.createTextNode(" "));
+    title.appendChild(badge);
+    info.appendChild(title);
+
+    var actions = document.createElement("div");
+    actions.className = "tmdb-actions";
+    var sel = document.createElement("select");
+    var opts = '<option value="">Toutes qualités</option>';
+    QUALITIES.forEach(function (q) { opts += '<option value="' + q + '">' + q + "</option>"; });
+    sel.innerHTML = opts;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-primary btn-small";
+    btn.textContent = "Ajouter";
+    btn.onclick = function () { addTracked(r, sel.value); };
+    actions.appendChild(sel);
+    actions.appendChild(btn);
+    info.appendChild(actions);
+
+    row.appendChild(info);
+    return row;
+  }
+
+  function addTracked(r, quality) {
+    var f = document.createElement("form");
+    f.method = "post";
+    f.action = "{{ url_for('tracked_add') }}";
+    function hid(name, value) {
+      var i = document.createElement("input");
+      i.type = "hidden";
+      i.name = name;
+      i.value = value == null ? "" : value;
+      f.appendChild(i);
+    }
+    hid("tmdb_id", r.tmdb_id);
+    hid("type", r.type);
+    hid("title", r.title);
+    hid("year", r.year);
+    hid("poster", r.poster_url || "");
+    hid("quality", quality);
+    document.body.appendChild(f);
+    f.submit();
+  }
+</script>
