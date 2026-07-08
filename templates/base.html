@@ -522,5 +522,19 @@
       tick();
     })();
   </script>
+
+  <script>
+    // Menu déroulant multi-sélection (filtre par flux) : ouverture/fermeture.
+    function toggleMultiselect(event, btn) {
+      event.stopPropagation();
+      var ms = btn.closest(".multiselect");
+      var wasOpen = ms.classList.contains("open");
+      document.querySelectorAll(".multiselect.open").forEach(function (m) { m.classList.remove("open"); });
+      if (!wasOpen) ms.classList.add("open");
+    }
+    document.addEventListener("click", function () {
+      document.querySelectorAll(".multiselect.open").forEach(function (m) { m.classList.remove("open"); });
+    });
+  </script>
 </body>
 </html>

@@ -109,7 +109,7 @@ def common_context():
 @app.route("/")
 def matches():
     keyword_filter = request.args.get("keyword", "").strip()
-    feed_filter = request.args.get("feed", "").strip()
+    feed_filter = [f for f in request.args.getlist("feed") if f.strip()]
     search = request.args.get("q", "").strip()
     page = request.args.get("page", 1, type=int) or 1
 
@@ -119,8 +119,9 @@ def matches():
         where_sql += " AND matched_keywords LIKE ?"
         params.append(f"%{keyword_filter}%")
     if feed_filter:
-        where_sql += " AND feed_name = ?"
-        params.append(feed_filter)
+        placeholders = ", ".join("?" for _ in feed_filter)
+        where_sql += f" AND feed_name IN ({placeholders})"
+        params.extend(feed_filter)
     if search:
         where_sql += " AND title LIKE ?"
         params.append(f"%{search}%")
@@ -154,15 +155,16 @@ def matches():
 
 @app.route("/all")
 def all_titles():
-    feed_filter = request.args.get("feed", "").strip()
+    feed_filter = [f for f in request.args.getlist("feed") if f.strip()]
     search = request.args.get("q", "").strip()
     page = request.args.get("page", 1, type=int) or 1
 
     where_sql = "WHERE 1=1"
     params = []
     if feed_filter:
-        where_sql += " AND feed_name = ?"
-        params.append(feed_filter)
+        placeholders = ", ".join("?" for _ in feed_filter)
+        where_sql += f" AND feed_name IN ({placeholders})"
+        params.extend(feed_filter)
     if search:
         where_sql += " AND title LIKE ?"
         params.append(f"%{search}%")

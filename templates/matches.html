@@ -1,18 +1,14 @@
 {% extends "base.html" %}
 {% import "_article_card.html" as cards %}
 {% import "_pagination.html" as paging %}
+{% import "_filters.html" as filters %}
 
 {% block content %}
   <section class="toolbar">
     <form method="get" class="search-bar">
       <input type="search" name="q" value="{{ search }}" placeholder="Rechercher un titre…">
 
-      <select name="feed" onchange="this.form.submit()">
-        <option value="">Tous les flux</option>
-        {% for name in feed_names %}
-          <option value="{{ name }}" {% if name == feed_filter %}selected{% endif %}>{{ name }}</option>
-        {% endfor %}
-      </select>
+      {{ filters.feed_multiselect(feed_names, feed_filter) }}
 
       <select name="keyword" onchange="this.form.submit()">
         <option value="">Tous les mots-clés</option>

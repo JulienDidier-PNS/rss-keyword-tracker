@@ -1,0 +1,26 @@
+{% macro feed_multiselect(feed_names, selected) %}
+  {% set count = selected|length %}
+  <div class="multiselect" data-multiselect>
+    <button type="button" class="multiselect-toggle" onclick="toggleMultiselect(event, this)">
+      <span class="multiselect-label">
+        {%- if count == 0 -%}Tous les flux
+        {%- elif count == 1 -%}{{ selected[0] }}
+        {%- else -%}{{ count }} flux sélectionnés
+        {%- endif -%}
+      </span>
+      <span class="multiselect-caret" aria-hidden="true">▾</span>
+    </button>
+    <div class="multiselect-panel" onclick="event.stopPropagation()">
+      {% for name in feed_names %}
+        <label class="multiselect-option">
+          <input type="checkbox" name="feed" value="{{ name }}"
+                 {% if name in selected %}checked{% endif %}
+                 onchange="this.form.submit()">
+          <span>{{ name }}</span>
+        </label>
+      {% else %}
+        <span class="multiselect-empty">Aucun flux</span>
+      {% endfor %}
+    </div>
+  </div>
+{% endmacro %}

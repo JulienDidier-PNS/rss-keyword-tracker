@@ -916,3 +916,78 @@ footer p { margin: 4px 0; }
   flex-wrap: wrap;
 }
 .settings-path input { flex: 1; min-width: 220px; }
+
+/* ===== Multi-sélecteur (filtre par flux) ===== */
+.multiselect {
+  position: relative;
+  display: inline-block;
+}
+.multiselect-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  min-width: 150px;
+  max-width: 260px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.multiselect-toggle:hover { border-color: var(--muted); }
+.multiselect.open .multiselect-toggle {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.multiselect-label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.multiselect-caret {
+  color: var(--muted);
+  font-size: 0.7rem;
+  transition: transform 0.15s ease;
+}
+.multiselect.open .multiselect-caret { transform: rotate(180deg); }
+
+.multiselect-panel {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  max-width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+.multiselect.open .multiselect-panel { display: block; }
+.multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.multiselect-option:hover { background: var(--bg); }
+.multiselect-option input { cursor: pointer; }
+.multiselect-empty {
+  display: block;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
