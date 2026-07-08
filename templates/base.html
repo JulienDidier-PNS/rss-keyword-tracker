@@ -11,7 +11,7 @@
     <h1>Veille RSS</h1>
     <p class="subtitle">
       {{ total }} article(s) enregistré(s) · {{ configured_feeds|length }} flux ·
-      {{ configured_keywords|length }} mot(s)-clé(s)
+      {{ tracked_titles|length }} titre(s) suivi(s)
       {% if next_fetch_seconds is not none %}
         · prochaine vérification dans <span id="next-fetch-countdown" data-seconds="{{ next_fetch_seconds }}">…</span>
       {% endif %}

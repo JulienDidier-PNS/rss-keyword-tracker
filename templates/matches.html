@@ -11,9 +11,9 @@
       {{ filters.feed_multiselect(feed_names, feed_filter) }}
 
       <select name="keyword" onchange="this.form.submit()">
-        <option value="">Tous les mots-clés</option>
-        {% for kw in configured_keywords|map(attribute='keyword')|unique %}
-          <option value="{{ kw }}" {% if kw == keyword_filter %}selected{% endif %}>{{ kw }}</option>
+        <option value="">Tous les titres suivis</option>
+        {% for name in tracked_titles|map(attribute='title')|unique %}
+          <option value="{{ name }}" {% if name == keyword_filter %}selected{% endif %}>{{ name }}</option>
         {% endfor %}
       </select>
 

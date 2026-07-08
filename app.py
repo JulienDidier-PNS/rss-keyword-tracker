@@ -6,7 +6,7 @@ from flask import Flask, flash, redirect, render_template, request, url_for
 from jdownloader import jd_send_links, jd_test_connection
 from fetcher import (
     add_feed,
-    add_keyword,
+    add_tracked_title,
     backfill_posters,
     clean_media_name,
     detect_media_type,
@@ -23,14 +23,16 @@ from fetcher import (
     init_db,
     load_config,
     purge_old_articles,
+    rematch_all,
     remove_feed,
-    remove_keyword,
+    remove_tracked_title,
     resolve_hydracker_link,
     set_hydracker_api_token,
     set_jdownloader_paths,
     set_jdownloader_settings,
     set_tmdb_api_key,
     start_background_thread,
+    tmdb_search,
 )
 
 app = Flask(__name__)
@@ -50,6 +52,9 @@ purge_old_articles()
 # "Vérifier maintenant", le premier cycle en arrière-plan n'ayant pas encore
 # eu le temps de tourner.
 fetch_once()
+# Recale les correspondances des articles déjà en base sur les titres suivis
+# actuels (utile après passage au matching TMDB, ou si config.json a été édité).
+rematch_all()
 start_background_thread()
 
 
@@ -88,7 +93,7 @@ def common_context():
     return {
         "feed_names": feed_names,
         "total": total,
-        "configured_keywords": config.get("keywords", []),
+        "tracked_titles": config.get("tracked_titles", []),
         "configured_feeds": config.get("feeds", []),
         "poll_interval": config.get("poll_interval_seconds", 300),
         "tmdb_api_key": config.get("tmdb_api_key", ""),
@@ -196,7 +201,7 @@ def all_titles():
 # Sections de configuration, chacune sur sa propre sous-page pleine largeur.
 SETTINGS_SECTIONS = [
     ("feeds", "Flux RSS"),
-    ("keywords", "Mots-clés"),
+    ("tracked", "Titres suivis"),
     ("media", "Affiches / TMDB"),
     ("hydracker", "Hydracker"),
     ("jdownloader", "JDownloader"),
@@ -234,25 +239,41 @@ def delete(article_id):
     return redirect(request.referrer or url_for("matches"))
 
 
-@app.route("/keywords/add", methods=["POST"])
-def keywords_add():
-    keyword = request.form.get("keyword", "")
-    quality = request.form.get("quality", "")
-    if keyword.strip():
-        add_keyword(keyword, quality)
-        label = keyword.strip()
-        if quality.strip():
-            label += f' ({quality.strip()})'
-        flash(f'Mot-clé "{label}" ajouté.')
-    return redirect(request.referrer or url_for("matches"))
+@app.route("/tmdb/search")
+def tmdb_search_route():
+    """Recherche TMDB pour la config des titres suivis (AJAX)."""
+    query = request.args.get("q", "")
+    results, error = tmdb_search(query, load_config().get("tmdb_api_key", "").strip())
+    if error:
+        return {"ok": False, "error": error, "results": []}
+    return {"ok": True, "results": results}
 
 
-@app.route("/keywords/delete", methods=["POST"])
-def keywords_delete():
-    keyword = request.form.get("keyword", "")
+@app.route("/tracked/add", methods=["POST"])
+def tracked_add():
+    tmdb_id = request.form.get("tmdb_id", "")
+    ttype = request.form.get("type", "")
+    title = request.form.get("title", "")
+    year = request.form.get("year", "")
+    poster = request.form.get("poster", "")
     quality = request.form.get("quality", "")
-    remove_keyword(keyword, quality)
-    return redirect(request.referrer or url_for("matches"))
+    if tmdb_id and ttype and title:
+        add_tracked_title(tmdb_id, ttype, title, year, poster or None, quality)
+        # Re-matche les articles déjà en base pour ce nouveau titre.
+        rematch_all()
+        label = title + (f" ({quality.strip()})" if quality.strip() else "")
+        flash(f'Titre suivi « {label} » ajouté.')
+    return redirect(request.referrer or url_for("settings_section", section="tracked"))
+
+
+@app.route("/tracked/delete", methods=["POST"])
+def tracked_delete():
+    tmdb_id = request.form.get("tmdb_id", "")
+    ttype = request.form.get("type", "")
+    quality = request.form.get("quality", "")
+    remove_tracked_title(tmdb_id, ttype, quality)
+    rematch_all()
+    return redirect(request.referrer or url_for("settings_section", section="tracked"))
 
 
 @app.route("/feeds/add", methods=["POST"])
