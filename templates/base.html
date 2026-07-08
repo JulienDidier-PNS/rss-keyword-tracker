@@ -52,6 +52,11 @@
           <h3>Résumé</h3>
           <p id="modal-summary" class="modal-summary"></p>
         </div>
+        <div id="modal-torrents" class="modal-torrents" style="display:none">
+          <h3>Téléchargements</h3>
+          <button type="button" id="modal-torrents-load" class="btn btn-primary btn-small">Voir les téléchargements</button>
+          <div id="modal-torrents-list" class="modal-torrents-list"></div>
+        </div>
         <div class="modal-actions">
           <a id="modal-download" class="btn btn-primary" href="#">Télécharger</a>
           <a id="modal-open" class="btn btn-ghost" href="#" target="_blank" rel="noopener">Ouvrir la source</a>
@@ -85,7 +90,76 @@
       container.appendChild(row);
     }
 
-    function openArticleModal(cardEl) {
+    function showTorrentStatus(container, message) {
+      container.innerHTML = "";
+      var p = document.createElement("p");
+      p.className = "modal-torrents-status";
+      p.textContent = message;
+      container.appendChild(p);
+    }
+
+    function buildTorrentRow(t) {
+      var row = document.createElement("div");
+      row.className = "torrent-row";
+
+      var meta = document.createElement("div");
+      meta.className = "torrent-meta";
+
+      var name = document.createElement("span");
+      name.className = "torrent-name";
+      name.textContent = t.name || "Torrent";
+      meta.appendChild(name);
+
+      var sub = document.createElement("span");
+      sub.className = "torrent-sub";
+      var parts = [];
+      if (t.quality) parts.push(t.quality);
+      if (t.size) parts.push(t.size);
+      parts.push("⬆ " + t.seeders + " · ⬇ " + t.leechers);
+      sub.textContent = parts.join(" · ");
+      meta.appendChild(sub);
+
+      var link = document.createElement("a");
+      link.className = "btn btn-primary btn-small";
+      link.href = t.download_url;
+      link.textContent = "Télécharger";
+      link.setAttribute("rel", "noopener");
+
+      row.appendChild(meta);
+      row.appendChild(link);
+      return row;
+    }
+
+    function loadHydrackerTorrents(articleId) {
+      var list = document.getElementById("modal-torrents-list");
+      var btn = document.getElementById("modal-torrents-load");
+      btn.disabled = true;
+      btn.textContent = "Chargement…";
+      list.innerHTML = "";
+      fetch("/article/" + articleId + "/torrents")
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res.ok) {
+            btn.disabled = false;
+            btn.textContent = "Réessayer";
+            showTorrentStatus(list, res.error || "Erreur inconnue.");
+            return;
+          }
+          btn.style.display = "none";
+          if (!res.torrents || !res.torrents.length) {
+            showTorrentStatus(list, "Aucun torrent disponible pour ce titre.");
+            return;
+          }
+          res.torrents.forEach(function (t) { list.appendChild(buildTorrentRow(t)); });
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = "Réessayer";
+          showTorrentStatus(list, "Erreur réseau.");
+        });
+    }
+
+    function openArticleModal(cardEl, autoload) {
       var data = JSON.parse(cardEl.dataset.article);
 
       document.getElementById("modal-title").textContent = data.title;
@@ -128,11 +202,28 @@
       document.querySelector(".modal-summary-block").style.display = summaryText ? "block" : "none";
 
       var dl = document.getElementById("modal-download");
+      var torrentsSection = document.getElementById("modal-torrents");
+      var torrentsLoadBtn = document.getElementById("modal-torrents-load");
+      document.getElementById("modal-torrents-list").innerHTML = "";
+      torrentsLoadBtn.disabled = false;
+      torrentsLoadBtn.style.display = "inline-block";
+      torrentsLoadBtn.textContent = "Voir les téléchargements";
+
+      var isHydracker = /hydracker\.com\/titles\/(\d+)/.test(data.url || "");
       if (data.download_url) {
+        // Flux qui fournit le lien directement (ex. Torr9).
         dl.href = data.download_url;
         dl.style.display = "inline-block";
+        torrentsSection.style.display = "none";
+      } else if (isHydracker) {
+        // Lien résolu à la demande via l'API Hydracker.
+        dl.style.display = "none";
+        torrentsSection.style.display = "block";
+        torrentsLoadBtn.onclick = function () { loadHydrackerTorrents(data.id); };
+        if (autoload) loadHydrackerTorrents(data.id);
       } else {
         dl.style.display = "none";
+        torrentsSection.style.display = "none";
       }
 
       document.getElementById("modal-open").href = data.url;

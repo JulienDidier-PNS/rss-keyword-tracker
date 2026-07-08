@@ -30,6 +30,9 @@
     <div class="article-actions">
       {% if a['download_url'] %}
         <a class="btn btn-primary btn-small" href="{{ a['download_url'] }}" onclick="event.stopPropagation()">Télécharger</a>
+      {% elif 'hydracker.com/titles/' in a['url'] %}
+        <button type="button" class="btn btn-primary btn-small"
+                onclick="event.stopPropagation(); openArticleModal(this.closest('.article-card'), true)">Télécharger</button>
       {% else %}
         <a class="btn btn-ghost btn-small" href="{{ a['url'] }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Voir</a>
       {% endif %}

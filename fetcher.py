@@ -29,6 +29,14 @@ RETENTION_DAYS = 30
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/multi"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
 
+# Contrairement à Torr9 dont le flux RSS embarque directement le .torrent (voir
+# extract_download_url), Hydracker ne fournit dans son flux qu'un lien vers la
+# fiche du titre (ex. https://hydracker.com/titles/108276/play-dirty). Le lien
+# de téléchargement s'obtient via l'API, en repartant de l'id du titre extrait
+# de ce lien.
+HYDRACKER_API_BASE = "https://hydracker.com/api/v1"
+_HYDRACKER_TITLE_RE = re.compile(r"hydracker\.com/titles/(\d+)")
+
 _lock = threading.Lock()
 _config_lock = threading.Lock()
 _state_lock = threading.Lock()
@@ -175,6 +183,141 @@ def set_tmdb_api_key(key):
     config = load_config()
     config["tmdb_api_key"] = key.strip()
     save_config(config)
+
+
+def set_hydracker_api_token(token):
+    config = load_config()
+    config["hydracker_api_token"] = token.strip()
+    save_config(config)
+
+
+def extract_hydracker_title_id(url):
+    """Id du titre Hydracker extrait d'un lien de fiche, ex.
+    "https://hydracker.com/titles/108276/play-dirty" -> "108276". None si le
+    lien n'est pas un titre Hydracker."""
+    if not url:
+        return None
+    match = _HYDRACKER_TITLE_RE.search(url)
+    return match.group(1) if match else None
+
+
+def _format_size(num):
+    """Taille lisible à partir d'un nombre d'octets (champ `taille` de l'API)."""
+    try:
+        num = float(num)
+    except (TypeError, ValueError):
+        return ""
+    for unit in ("o", "Ko", "Mo", "Go", "To"):
+        if num < 1024:
+            return f"{num:.0f} {unit}" if unit in ("o", "Ko") else f"{num:.1f} {unit}"
+        num /= 1024
+    return f"{num:.1f} Po"
+
+
+def fetch_hydracker_torrents(title_id, token):
+    """Interroge l'API Hydracker pour lister les torrents d'un titre. Renvoie
+    (torrents, erreur) : `torrents` est une liste de dicts prêts pour l'affichage
+    (nom, qualité, taille, seeders, download_url), `erreur` vaut None si tout va
+    bien, sinon un message lisible.
+
+    La `download_url` renvoyée par l'API est une URL *signée valable ~30 min* :
+    on ne peut donc pas la résoudre au moment du fetch du flux et la stocker
+    comme le .torrent de Torr9 — elle serait expirée. D'où la résolution à la
+    demande (au clic sur "Télécharger"), qui a l'avantage de ne consommer le
+    crédit API que pour les titres réellement téléchargés."""
+    if not token:
+        return [], "Aucun token API Hydracker configuré (Configuration → Hydracker)."
+
+    url = f"{HYDRACKER_API_BASE}/titles/{title_id}/content/torrents"
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+            # Un token invalide fait rediriger (302) vers /login : sans ça,
+            # requests suivrait la redirection et on lirait la page de login au
+            # lieu de détecter l'échec d'authentification.
+            allow_redirects=False,
+        )
+    except Exception as exc:
+        return [], f"Erreur réseau vers Hydracker : {exc}"
+
+    if 300 <= response.status_code < 400:
+        return [], "Token API Hydracker invalide ou accès API non activé (redirection vers la connexion)."
+    if response.status_code == 401:
+        return [], "Token API Hydracker invalide ou expiré (401)."
+    if response.status_code == 403:
+        return [], "Accès refusé par Hydracker (403) : compte premium requis ou accès API non activé."
+    if response.status_code == 429:
+        return [], "Limite de requêtes Hydracker atteinte (429, max 1/s) — réessaie dans un instant."
+    if response.status_code != 200:
+        return [], f"Réponse inattendue de Hydracker (HTTP {response.status_code})."
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return [], "Réponse Hydracker illisible (JSON invalide)."
+
+    raw_torrents = (payload.get("data") or {}).get("torrents") or []
+    torrents = []
+    for item in raw_torrents:
+        qual = item.get("qual") or {}
+        torrents.append(
+            {
+                "id": item.get("id"),
+                "name": item.get("torrent_name") or "",
+                "quality": qual.get("label") or qual.get("name") or "",
+                "size": _format_size(item.get("taille")),
+                "seeders": item.get("seeders") or 0,
+                "leechers": item.get("leechers") or 0,
+                "saison": item.get("saison"),
+                "episode": item.get("episode"),
+                "download_url": item.get("download_url"),
+            }
+        )
+
+    # Le schéma de l'endpoint "liste" inclut download_url, mais son résumé dit
+    # "metadata, no URL" : selon la version de l'API, les URLs peuvent manquer
+    # ici. On les résout alors en un seul appel groupé à /content/torrents/{ids}
+    # (jusqu'à 50 ids séparés par des virgules), sans surcoût pour celles déjà
+    # présentes.
+    missing_ids = [str(t["id"]) for t in torrents if not t["download_url"] and t["id"] is not None]
+    if missing_ids:
+        resolved = _resolve_hydracker_download_urls(missing_ids, token)
+        for t in torrents:
+            if not t["download_url"]:
+                t["download_url"] = resolved.get(t["id"])
+
+    # On ne garde que les torrents effectivement téléchargeables, triés par
+    # seeders décroissants (le plus sain proposé en tête).
+    torrents = [t for t in torrents if t["download_url"]]
+    torrents.sort(key=lambda t: t["seeders"], reverse=True)
+    return torrents, None
+
+
+def _resolve_hydracker_download_urls(ids, token):
+    """Résout les URLs signées d'un lot de torrents via /content/torrents/{ids}
+    (ids séparés par des virgules). Renvoie un dict {id: download_url}. Silencieux
+    en cas d'échec : le fetch principal affichera simplement moins de torrents."""
+    try:
+        response = requests.get(
+            f"{HYDRACKER_API_BASE}/content/torrents/{','.join(ids)}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        data = response.json().get("data") or {}
+    except Exception:
+        return {}
+
+    # Réponse : `torrent` (un seul id demandé) ou `torrents` (plusieurs).
+    items = data.get("torrents")
+    if items is None:
+        single = data.get("torrent")
+        items = [single] if single else []
+
+    return {item.get("id"): item.get("download_url") for item in items if item.get("download_url")}
 
 
 def get_connection():

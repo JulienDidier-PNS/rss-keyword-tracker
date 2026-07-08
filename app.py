@@ -9,7 +9,9 @@ from fetcher import (
     backfill_posters,
     dismiss_article,
     ensure_config_exists,
+    extract_hydracker_title_id,
     extract_quality_tags,
+    fetch_hydracker_torrents,
     fetch_once,
     get_connection,
     get_seconds_until_next_fetch,
@@ -18,6 +20,7 @@ from fetcher import (
     purge_old_articles,
     remove_feed,
     remove_keyword,
+    set_hydracker_api_token,
     set_tmdb_api_key,
     start_background_thread,
 )
@@ -79,6 +82,7 @@ def common_context():
         "configured_feeds": config.get("feeds", []),
         "poll_interval": config.get("poll_interval_seconds", 300),
         "tmdb_api_key": config.get("tmdb_api_key", ""),
+        "hydracker_api_token": config.get("hydracker_api_token", ""),
         "next_fetch_seconds": get_seconds_until_next_fetch(),
         "quality_choices": QUALITY_CHOICES,
     }
@@ -236,6 +240,37 @@ def settings_tmdb():
     set_tmdb_api_key(key)
     flash("Clé TMDB mise à jour." if key.strip() else "Clé TMDB retirée.")
     return redirect(request.referrer or url_for("matches"))
+
+
+@app.route("/settings/hydracker", methods=["POST"])
+def settings_hydracker():
+    token = request.form.get("hydracker_api_token", "")
+    set_hydracker_api_token(token)
+    flash("Token Hydracker mis à jour." if token.strip() else "Token Hydracker retiré.")
+    return redirect(request.referrer or url_for("matches"))
+
+
+@app.route("/article/<int:article_id>/torrents")
+def article_torrents(article_id):
+    """Résolution à la demande des liens de téléchargement Hydracker : appelée
+    en AJAX au moment où l'utilisateur veut télécharger, jamais au fetch (les
+    URLs signées expirent après ~30 min, et chaque appel consomme le crédit
+    API)."""
+    conn = get_connection()
+    row = conn.execute("SELECT url FROM articles WHERE id = ?", (article_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return {"ok": False, "error": "Article introuvable.", "torrents": []}, 404
+
+    title_id = extract_hydracker_title_id(row["url"])
+    if not title_id:
+        return {"ok": False, "error": "Cet article n'est pas un titre Hydracker.", "torrents": []}, 400
+
+    token = load_config().get("hydracker_api_token", "").strip()
+    torrents, error = fetch_hydracker_torrents(title_id, token)
+    if error:
+        return {"ok": False, "error": error, "torrents": []}
+    return {"ok": True, "torrents": torrents}
 
 
 @app.route("/posters/backfill", methods=["POST"])

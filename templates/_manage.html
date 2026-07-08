@@ -73,4 +73,19 @@
       <button type="submit" class="btn btn-ghost btn-small">Récupérer les affiches manquantes</button>
     </form>
   </div>
+
+  <div class="manage-block">
+    <h2>Hydracker</h2>
+    <p class="manage-hint">
+      Le flux Hydracker ne fournit pas le lien de téléchargement directement
+      (contrairement à Torr9). Avec un token API (à générer sur
+      <a href="https://hydracker.com/account" target="_blank" rel="noopener">hydracker.com/account</a>,
+      section <em>API tokens</em>), un bouton « Télécharger » apparaît sur les
+      titres Hydracker et propose les torrents disponibles, résolus à la demande.
+    </p>
+    <form method="post" action="{{ url_for('settings_hydracker') }}" class="manage-form">
+      <input type="password" name="hydracker_api_token" value="{{ hydracker_api_token }}" placeholder="Token API Hydracker (optionnel)" autocomplete="off">
+      <button type="submit" class="btn btn-primary btn-small">Enregistrer</button>
+    </form>
+  </div>
 </section>
