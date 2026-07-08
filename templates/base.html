@@ -52,9 +52,14 @@
           <h3>Résumé</h3>
           <p id="modal-summary" class="modal-summary"></p>
         </div>
+        <div id="modal-links" class="modal-torrents" style="display:none">
+          <h3>Téléchargements directs</h3>
+          <button type="button" id="modal-links-load" class="btn btn-primary btn-small">Voir les liens directs</button>
+          <div id="modal-links-list" class="modal-torrents-list"></div>
+        </div>
         <div id="modal-torrents" class="modal-torrents" style="display:none">
-          <h3>Téléchargements</h3>
-          <button type="button" id="modal-torrents-load" class="btn btn-primary btn-small">Voir les téléchargements</button>
+          <h3>Torrents</h3>
+          <button type="button" id="modal-torrents-load" class="btn btn-ghost btn-small">Voir les torrents</button>
           <div id="modal-torrents-list" class="modal-torrents-list"></div>
         </div>
         <div class="modal-actions">
@@ -115,6 +120,7 @@
       var parts = [];
       if (t.quality) parts.push(t.quality);
       if (t.size) parts.push(t.size);
+      if (t.langs && t.langs.length) parts.push(t.langs.join("/"));
       parts.push("⬆ " + t.seeders + " · ⬇ " + t.leechers);
       sub.textContent = parts.join(" · ");
       meta.appendChild(sub);
@@ -151,6 +157,130 @@
             return;
           }
           res.torrents.forEach(function (t) { list.appendChild(buildTorrentRow(t)); });
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = "Réessayer";
+          showTorrentStatus(list, "Erreur réseau.");
+        });
+    }
+
+    function seLabel(saison, episode) {
+      var se = "";
+      if (saison) se += "S" + String(saison).padStart(2, "0");
+      if (episode) se += "E" + String(episode).padStart(2, "0");
+      return se;
+    }
+
+    function buildLinkRow(link) {
+      var row = document.createElement("div");
+      row.className = "torrent-row";
+
+      var meta = document.createElement("div");
+      meta.className = "torrent-meta";
+
+      var name = document.createElement("span");
+      name.className = "torrent-name";
+      var titleParts = [link.quality || "Lien direct"];
+      var se = seLabel(link.saison, link.episode);
+      if (link.full_saison) titleParts.push("Saison complète");
+      else if (se) titleParts.push(se);
+      name.textContent = titleParts.join(" · ");
+      meta.appendChild(name);
+
+      var sub = document.createElement("span");
+      sub.className = "torrent-sub";
+      var subParts = [];
+      if (link.size) subParts.push(link.size);
+      if (link.host) subParts.push(link.host);
+      if (link.langs && link.langs.length) subParts.push(link.langs.join("/"));
+      sub.textContent = subParts.join(" · ");
+      meta.appendChild(sub);
+
+      var action = document.createElement("div");
+      action.className = "torrent-action";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-primary btn-small";
+      btn.textContent = "Récupérer le lien";
+      btn.onclick = function () { resolveHydrackerLink(link.id, action); };
+      action.appendChild(btn);
+
+      row.appendChild(meta);
+      row.appendChild(action);
+      return row;
+    }
+
+    function appendLinkError(actionEl, linkId, message) {
+      var span = document.createElement("span");
+      span.className = "modal-torrents-status";
+      span.textContent = message;
+      actionEl.appendChild(span);
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "btn btn-ghost btn-small";
+      retry.textContent = "Réessayer";
+      retry.onclick = function () { resolveHydrackerLink(linkId, actionEl); };
+      actionEl.appendChild(retry);
+    }
+
+    function resolveHydrackerLink(linkId, actionEl) {
+      actionEl.innerHTML = "";
+      var pending = document.createElement("button");
+      pending.type = "button";
+      pending.className = "btn btn-primary btn-small";
+      pending.disabled = true;
+      pending.textContent = "Résolution…";
+      actionEl.appendChild(pending);
+
+      fetch("/link/" + linkId + "/resolve")
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          actionEl.innerHTML = "";
+          if (!res.ok) { appendLinkError(actionEl, linkId, res.error || "Erreur inconnue."); return; }
+          var url = res.direct_url || res.raw_url;
+          if (!url) {
+            appendLinkError(actionEl, linkId, res.debrid_error ? ("Debrid échoué : " + res.debrid_error) : "Aucun lien disponible.");
+            return;
+          }
+          var a = document.createElement("a");
+          a.className = "btn btn-primary btn-small";
+          a.href = url;
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.textContent = res.direct_url ? "Télécharger" : "Ouvrir l'hébergeur";
+          actionEl.appendChild(a);
+          if (res.remaining_today !== undefined && res.remaining_today !== null) {
+            var note = document.createElement("span");
+            note.className = "torrent-sub";
+            note.textContent = "Quota restant : " + res.remaining_today;
+            actionEl.appendChild(note);
+          }
+        })
+        .catch(function () { actionEl.innerHTML = ""; appendLinkError(actionEl, linkId, "Erreur réseau."); });
+    }
+
+    function loadHydrackerLinks(articleId) {
+      var list = document.getElementById("modal-links-list");
+      var btn = document.getElementById("modal-links-load");
+      btn.disabled = true;
+      btn.textContent = "Chargement…";
+      list.innerHTML = "";
+      fetch("/article/" + articleId + "/links")
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res.ok) {
+            btn.disabled = false;
+            btn.textContent = "Réessayer";
+            showTorrentStatus(list, res.error || "Erreur inconnue.");
+            return;
+          }
+          btn.style.display = "none";
+          if (!res.links || !res.links.length) {
+            showTorrentStatus(list, "Aucun lien direct disponible pour ce titre.");
+            return;
+          }
+          res.links.forEach(function (l) { list.appendChild(buildLinkRow(l)); });
         })
         .catch(function () {
           btn.disabled = false;
@@ -202,27 +332,38 @@
       document.querySelector(".modal-summary-block").style.display = summaryText ? "block" : "none";
 
       var dl = document.getElementById("modal-download");
+      var linksSection = document.getElementById("modal-links");
+      var linksLoadBtn = document.getElementById("modal-links-load");
       var torrentsSection = document.getElementById("modal-torrents");
       var torrentsLoadBtn = document.getElementById("modal-torrents-load");
+      document.getElementById("modal-links-list").innerHTML = "";
       document.getElementById("modal-torrents-list").innerHTML = "";
+      linksLoadBtn.disabled = false;
+      linksLoadBtn.style.display = "inline-block";
+      linksLoadBtn.textContent = "Voir les liens directs";
       torrentsLoadBtn.disabled = false;
       torrentsLoadBtn.style.display = "inline-block";
-      torrentsLoadBtn.textContent = "Voir les téléchargements";
+      torrentsLoadBtn.textContent = "Voir les torrents";
 
       var isHydracker = /hydracker\.com\/titles\/(\d+)/.test(data.url || "");
       if (data.download_url) {
         // Flux qui fournit le lien directement (ex. Torr9).
         dl.href = data.download_url;
         dl.style.display = "inline-block";
+        linksSection.style.display = "none";
         torrentsSection.style.display = "none";
       } else if (isHydracker) {
-        // Lien résolu à la demande via l'API Hydracker.
+        // Hydracker : liens directs (primaire) + torrents, résolus à la demande.
         dl.style.display = "none";
+        linksSection.style.display = "block";
         torrentsSection.style.display = "block";
+        linksLoadBtn.onclick = function () { loadHydrackerLinks(data.id); };
         torrentsLoadBtn.onclick = function () { loadHydrackerTorrents(data.id); };
-        if (autoload) loadHydrackerTorrents(data.id);
+        // Le bouton "Télécharger" de la carte cible les liens directs.
+        if (autoload) loadHydrackerLinks(data.id);
       } else {
         dl.style.display = "none";
+        linksSection.style.display = "none";
         torrentsSection.style.display = "none";
       }
 

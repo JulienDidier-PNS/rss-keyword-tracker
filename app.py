@@ -11,15 +11,18 @@ from fetcher import (
     ensure_config_exists,
     extract_hydracker_title_id,
     extract_quality_tags,
+    fetch_hydracker_links,
     fetch_hydracker_torrents,
     fetch_once,
     get_connection,
     get_seconds_until_next_fetch,
+    hydracker_login,
     init_db,
     load_config,
     purge_old_articles,
     remove_feed,
     remove_keyword,
+    resolve_hydracker_link,
     set_hydracker_api_token,
     set_tmdb_api_key,
     start_background_thread,
@@ -250,6 +253,21 @@ def settings_hydracker():
     return redirect(request.referrer or url_for("matches"))
 
 
+@app.route("/settings/hydracker-login", methods=["POST"])
+def settings_hydracker_login():
+    """Récupère un token API à partir des identifiants du compte (le mot de
+    passe n'est pas conservé, seul le token renvoyé est enregistré)."""
+    email = request.form.get("hydracker_email", "")
+    password = request.form.get("hydracker_password", "")
+    token, error = hydracker_login(email, password)
+    if error:
+        flash(f"Connexion Hydracker échouée : {error}")
+    else:
+        set_hydracker_api_token(token)
+        flash("Connecté à Hydracker : token récupéré et enregistré.")
+    return redirect(request.referrer or url_for("settings"))
+
+
 @app.route("/article/<int:article_id>/torrents")
 def article_torrents(article_id):
     """Résolution à la demande des liens de téléchargement Hydracker : appelée
@@ -271,6 +289,40 @@ def article_torrents(article_id):
     if error:
         return {"ok": False, "error": error, "torrents": []}
     return {"ok": True, "torrents": torrents}
+
+
+@app.route("/article/<int:article_id>/links")
+def article_links(article_id):
+    """Liste les liens de téléchargement direct (hébergeurs) d'un titre
+    Hydracker. Renvoie seulement les métadonnées : chaque lien est ensuite
+    résolu à la demande via /link/<id>/resolve."""
+    conn = get_connection()
+    row = conn.execute("SELECT url FROM articles WHERE id = ?", (article_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return {"ok": False, "error": "Article introuvable.", "links": []}, 404
+
+    title_id = extract_hydracker_title_id(row["url"])
+    if not title_id:
+        return {"ok": False, "error": "Cet article n'est pas un titre Hydracker.", "links": []}, 400
+
+    token = load_config().get("hydracker_api_token", "").strip()
+    links, error = fetch_hydracker_links(title_id, token)
+    if error:
+        return {"ok": False, "error": error, "links": []}
+    return {"ok": True, "links": links}
+
+
+@app.route("/link/<int:link_id>/resolve")
+def link_resolve(link_id):
+    """Résolution debrid d'un lien direct précis : renvoie l'URL de
+    téléchargement direct réelle. Déclenchée par un clic explicite (peut débiter
+    le crédit / quota du compte)."""
+    token = load_config().get("hydracker_api_token", "").strip()
+    result, error = resolve_hydracker_link(link_id, token)
+    if error:
+        return {"ok": False, "error": error}
+    return {"ok": True, **result}
 
 
 @app.route("/posters/backfill", methods=["POST"])

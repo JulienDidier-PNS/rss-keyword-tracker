@@ -36,6 +36,13 @@ TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
 # de ce lien.
 HYDRACKER_API_BASE = "https://hydracker.com/api/v1"
 _HYDRACKER_TITLE_RE = re.compile(r"hydracker\.com/titles/(\d+)")
+# Hydracker est derrière Cloudflare, qui répond 403 (page de challenge HTML) au
+# User-Agent par défaut de requests. Un UA de navigateur laisse passer les
+# appels API légitimes (authentifiés par le bearer token).
+_HYDRACKER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
 
 _lock = threading.Lock()
 _config_lock = threading.Lock()
@@ -214,6 +221,50 @@ def _format_size(num):
     return f"{num:.1f} Po"
 
 
+def _qual_label(item):
+    """Qualité lisible d'un item, ex. "WEB 1080p Light" / "REMUX BLURAY". Le
+    champ `qual.qual` porte la chaîne affichable ; `qual.label` n'est qu'un
+    tier interne ("highqual")."""
+    qual = item.get("qual") or {}
+    return qual.get("qual") or qual.get("label") or ""
+
+
+def _langs(item):
+    """Langues d'un item (langues_compact), ex. ["TrueFrench", "English"]."""
+    return [lang.get("name") for lang in (item.get("langues_compact") or []) if lang.get("name")]
+
+
+def _hydracker_headers(token):
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": _HYDRACKER_UA,
+    }
+
+
+def _hydracker_http_error(response):
+    """Message d'erreur lisible pour les statuts d'échec courants de l'API
+    Hydracker, ou None si la réponse est exploitable (200). Un token invalide
+    fait rediriger (3xx) vers /login (d'où allow_redirects=False côté appelant),
+    ce qu'on traite comme un échec d'authentification."""
+    code = response.status_code
+    if 300 <= code < 400:
+        return "Token API Hydracker invalide ou accès API non activé (redirection vers la connexion)."
+    if code == 401:
+        return "Token API Hydracker invalide ou expiré (401)."
+    if code == 402:
+        return "Crédit GB Hydracker insuffisant pour ce lien (402)."
+    if code == 403:
+        return "Accès refusé par Hydracker (403) : compte premium requis, accès API non activé, ou contenu non autorisé."
+    if code == 404:
+        return "Introuvable côté Hydracker (404)."
+    if code == 429:
+        return "Quota Hydracker atteint (429) : limite journalière ou 1 req/s — réessaie dans un instant."
+    if code != 200:
+        return f"Réponse inattendue de Hydracker (HTTP {code})."
+    return None
+
+
 def fetch_hydracker_torrents(title_id, token):
     """Interroge l'API Hydracker pour lister les torrents d'un titre. Renvoie
     (torrents, erreur) : `torrents` est une liste de dicts prêts pour l'affichage
@@ -230,57 +281,47 @@ def fetch_hydracker_torrents(title_id, token):
 
     url = f"{HYDRACKER_API_BASE}/titles/{title_id}/content/torrents"
     try:
-        response = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            timeout=10,
-            # Un token invalide fait rediriger (302) vers /login : sans ça,
-            # requests suivrait la redirection et on lirait la page de login au
-            # lieu de détecter l'échec d'authentification.
-            allow_redirects=False,
-        )
+        response = requests.get(url, headers=_hydracker_headers(token), timeout=10, allow_redirects=False)
     except Exception as exc:
         return [], f"Erreur réseau vers Hydracker : {exc}"
 
-    if 300 <= response.status_code < 400:
-        return [], "Token API Hydracker invalide ou accès API non activé (redirection vers la connexion)."
-    if response.status_code == 401:
-        return [], "Token API Hydracker invalide ou expiré (401)."
-    if response.status_code == 403:
-        return [], "Accès refusé par Hydracker (403) : compte premium requis ou accès API non activé."
-    if response.status_code == 429:
-        return [], "Limite de requêtes Hydracker atteinte (429, max 1/s) — réessaie dans un instant."
-    if response.status_code != 200:
-        return [], f"Réponse inattendue de Hydracker (HTTP {response.status_code})."
+    error = _hydracker_http_error(response)
+    if error:
+        return [], error
 
     try:
         payload = response.json()
     except ValueError:
         return [], "Réponse Hydracker illisible (JSON invalide)."
 
-    raw_torrents = (payload.get("data") or {}).get("torrents") or []
+    # L'API renvoie `torrents` à la racine (le schéma OpenAPI le place à tort
+    # sous `data`) — on gère les deux par sécurité.
+    raw_torrents = payload.get("torrents")
+    if raw_torrents is None:
+        raw_torrents = (payload.get("data") or {}).get("torrents")
+    raw_torrents = raw_torrents or []
+
     torrents = []
     for item in raw_torrents:
-        qual = item.get("qual") or {}
         torrents.append(
             {
                 "id": item.get("id"),
-                "name": item.get("torrent_name") or "",
-                "quality": qual.get("label") or qual.get("name") or "",
-                "size": _format_size(item.get("taille")),
+                "name": item.get("torrent_name") or item.get("name") or "",
+                "quality": _qual_label(item),
+                "size": _format_size(item.get("taille") or item.get("size")),
                 "seeders": item.get("seeders") or 0,
                 "leechers": item.get("leechers") or 0,
+                "langs": _langs(item),
                 "saison": item.get("saison"),
                 "episode": item.get("episode"),
+                "full_saison": item.get("full_saison"),
                 "download_url": item.get("download_url"),
             }
         )
 
-    # Le schéma de l'endpoint "liste" inclut download_url, mais son résumé dit
-    # "metadata, no URL" : selon la version de l'API, les URLs peuvent manquer
-    # ici. On les résout alors en un seul appel groupé à /content/torrents/{ids}
-    # (jusqu'à 50 ids séparés par des virgules), sans surcoût pour celles déjà
-    # présentes.
+    # La liste ne contient pas download_url : on résout les URLs signées en un
+    # seul appel groupé à /content/torrents/{ids} (jusqu'à 50 ids séparés par
+    # des virgules).
     missing_ids = [str(t["id"]) for t in torrents if not t["download_url"] and t["id"] is not None]
     if missing_ids:
         resolved = _resolve_hydracker_download_urls(missing_ids, token)
@@ -302,22 +343,170 @@ def _resolve_hydracker_download_urls(ids, token):
     try:
         response = requests.get(
             f"{HYDRACKER_API_BASE}/content/torrents/{','.join(ids)}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers=_hydracker_headers(token),
             timeout=10,
             allow_redirects=False,
         )
         response.raise_for_status()
-        data = response.json().get("data") or {}
+        payload = response.json()
     except Exception:
         return {}
 
-    # Réponse : `torrent` (un seul id demandé) ou `torrents` (plusieurs).
-    items = data.get("torrents")
+    # Réponse à la racine : `torrents` (plusieurs ids) ou `torrent` (un seul).
+    items = payload.get("torrents")
     if items is None:
-        single = data.get("torrent")
+        single = payload.get("torrent")
         items = [single] if single else []
 
-    return {item.get("id"): item.get("download_url") for item in items if item.get("download_url")}
+    return {item.get("id"): item.get("download_url") for item in items if item and item.get("download_url")}
+
+
+def fetch_hydracker_links(title_id, token):
+    """Liste les liens de téléchargement *direct* (hébergeurs) d'un titre via
+    /titles/{id}/content/liens. Renvoie (liens, erreur).
+
+    Le champ `lien` renvoyé par l'API est *obfusqué* et pas utilisable tel quel :
+    chaque entrée n'expose donc ici que ses métadonnées (qualité, taille, hôte,
+    saison/épisode) + son `id`. L'URL de téléchargement direct réelle s'obtient
+    ensuite à la demande, lien par lien, via resolve_hydracker_link (résolution
+    debrid), ce qui évite de consommer le crédit pour des liens jamais utilisés."""
+    if not token:
+        return [], "Aucun token API Hydracker configuré (Configuration → Hydracker)."
+
+    url = f"{HYDRACKER_API_BASE}/titles/{title_id}/content/liens"
+    try:
+        response = requests.get(url, headers=_hydracker_headers(token), timeout=10, allow_redirects=False)
+    except Exception as exc:
+        return [], f"Erreur réseau vers Hydracker : {exc}"
+
+    error = _hydracker_http_error(response)
+    if error:
+        return [], error
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return [], "Réponse Hydracker illisible (JSON invalide)."
+
+    # `liens` à la racine (le schéma OpenAPI le place à tort sous `data`).
+    raw_links = payload.get("liens")
+    if raw_links is None:
+        raw_links = (payload.get("data") or {}).get("liens")
+    raw_links = raw_links or []
+
+    links = []
+    for item in raw_links:
+        if item.get("id") is None:
+            continue
+        host = item.get("host") or {}
+        links.append(
+            {
+                "id": item.get("id"),
+                "quality": _qual_label(item),
+                "size": _format_size(item.get("taille")),
+                "host": host.get("name") or "",
+                "langs": _langs(item),
+                "saison": item.get("saison"),
+                "episode": item.get("episode"),
+                "full_saison": item.get("full_saison"),
+            }
+        )
+
+    return links, None
+
+
+def resolve_hydracker_link(link_id, token):
+    """Résout un lien direct précis (avec debrid) via /content/liens/{id}.
+    Renvoie (result, erreur). `result` est un dict :
+      - direct_url    : URL de téléchargement direct réelle (None si debrid KO)
+      - raw_url       : URL d'origine sur l'hébergeur (repli si pas de direct_url)
+      - debrided      : bool
+      - debrid_error  : code d'erreur debrid éventuel
+      - quality, size : infos d'affichage
+      - remaining_today : quota restant du jour (si fourni par l'API)
+    Chaque résolution applique la politique de tier et peut débiter le crédit :
+    c'est voulu qu'elle soit déclenchée par un clic explicite, un lien à la fois."""
+    if not token:
+        return None, "Aucun token API Hydracker configuré (Configuration → Hydracker)."
+
+    url = f"{HYDRACKER_API_BASE}/content/liens/{link_id}"
+    try:
+        response = requests.get(url, headers=_hydracker_headers(token), timeout=20, allow_redirects=False)
+    except Exception as exc:
+        return None, f"Erreur réseau vers Hydracker : {exc}"
+
+    error = _hydracker_http_error(response)
+    if error:
+        return None, error
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "Réponse Hydracker illisible (JSON invalide)."
+
+    # Champs à la racine (le schéma OpenAPI les place à tort sous `data`).
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    lien = data.get("lien") or {}
+    access = data.get("access") or {}
+    result = {
+        "direct_url": data.get("directDL"),
+        "raw_url": data.get("raw_url"),
+        "debrided": bool(data.get("debrided")),
+        "debrid_error": data.get("debrid_error"),
+        "quality": _qual_label(lien),
+        "size": _format_size(lien.get("taille")),
+        "remaining_today": access.get("remaining_today"),
+    }
+    return result, None
+
+
+def hydracker_login(email, password, token_name="stream-app"):
+    """Obtient un token API Hydracker via POST /auth/login à partir des
+    identifiants du compte. Renvoie (token, erreur).
+
+    On force token_name="stream-app" : la doc précise que la preuve captcha
+    n'est *pas* requise dans ce cas (chemin app mobile) — avec n'importe quel
+    autre nom, l'API exigerait un captcha qu'on ne peut pas résoudre côté
+    serveur. Le mot de passe n'est jamais stocké : seul le token renvoyé l'est."""
+    email = (email or "").strip()
+    password = password or ""
+    if not email or not password:
+        return None, "Email et mot de passe requis."
+
+    url = f"{HYDRACKER_API_BASE}/auth/login"
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": _HYDRACKER_UA,
+            },
+            json={"email": email, "password": password, "token_name": token_name},
+            timeout=15,
+            allow_redirects=False,
+        )
+    except Exception as exc:
+        return None, f"Erreur réseau vers Hydracker : {exc}"
+
+    if response.status_code == 401:
+        return None, "Identifiants Hydracker invalides."
+    if response.status_code == 422:
+        return None, "Connexion refusée (422) : données invalides ou preuve captcha requise."
+    if response.status_code == 429:
+        return None, "Trop de tentatives de connexion (429, max 10/min) — réessaie plus tard."
+    if response.status_code != 200:
+        return None, f"Réponse inattendue de Hydracker (HTTP {response.status_code})."
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "Réponse Hydracker illisible (JSON invalide)."
+
+    token = (payload.get("user") or {}).get("token")
+    if not token:
+        return None, "Token absent de la réponse Hydracker."
+    return token, None
 
 
 def get_connection():
