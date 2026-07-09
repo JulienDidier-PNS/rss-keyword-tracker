@@ -7,3 +7,20 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/data
+
+  # Bot WhatsApp (canal de communauté), voir docker-compose.yml pour le détail
+  # de la config (pas encore d'image publiée sur Docker Hub : build local).
+  whatsapp-bot:
+    build: ./whatsapp-bot
+    image: rss-tracker-whatsapp-bot:latest
+    container_name: rss-tracker-whatsapp-bot
+    restart: unless-stopped
+    depends_on:
+      - rss-tracker
+    environment:
+      - FLASK_BASE_URL=http://rss-tracker:8000
+      - BOT_SHARED_SECRET=${BOT_SHARED_SECRET:?voir .env.example}
+      - ALLOWED_GROUP_JIDS=${ALLOWED_GROUP_JIDS:-}
+      - DEFAULT_QUALITY=${DEFAULT_QUALITY:-1080p}
+    volumes:
+      - ./whatsapp-bot/auth:/app/auth

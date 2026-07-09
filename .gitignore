@@ -5,6 +5,10 @@ __pycache__/
 config.json
 config.json.bak
 
+# Secrets docker-compose (BOT_SHARED_SECRET, etc.) : voir .env.example.
+# (whatsapp-bot/ a son propre .gitignore pour node_modules/ et auth/.)
+.env
+
 # Données Docker persistantes (config.json, articles.db en volume) : jamais
 # versionnées, mais on garde le dossier dans le repo via .gitkeep.
 data/*

@@ -1,0 +1,91 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Demandes (WhatsApp)</h2>
+    <p>
+      Titres demandés via le bot WhatsApp du canal de communauté : quelqu'un
+      mentionne le bot, cherche un film/série, confirme, choisit saison/épisodes
+      pour une série — le titre part directement en <strong>DDL automatique
+      1080p</strong> par défaut. Modifie ici la qualité, le dossier ou les
+      épisodes sans avoir à repasser par le bot.
+    </p>
+  </div>
+
+  <div class="settings-subhead">
+    <h3>Connexion du bot</h3>
+    <p class="settings-help">
+      Le service <code>whatsapp-bot</code> (processus séparé) appelle l'API
+      <code>POST /api/bot/requests</code> avec ce secret dans l'en-tête
+      <code>X-Bot-Secret</code>, à renseigner dans son fichier <code>.env</code>
+      (<code>BOT_SHARED_SECRET</code>). Régénère-le si tu penses qu'il a fuité :
+      le bot devra alors être reconfiguré avec la nouvelle valeur.
+    </p>
+    <div class="settings-form settings-form-row">
+      <input type="text" id="bot-secret-field" value="{{ bot_shared_secret }}" readonly
+             onclick="this.select()">
+      <button type="button" class="btn btn-ghost" onclick="toggleBotSecret()" id="bot-secret-toggle">Afficher</button>
+      <form method="post" action="{{ url_for('bot_secret_regenerate') }}"
+            onsubmit="return confirm('Régénérer le secret ? Le bot WhatsApp devra être reconfiguré avec la nouvelle valeur.');">
+        <button type="submit" class="btn btn-ghost">Régénérer</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="settings-subhead">
+    <h3>Demandes traitées</h3>
+  </div>
+  <div class="tracked-list">
+    {% for t in bot_requests %}
+      <div class="tracked-item">
+        {% if t.poster %}
+          <img class="tracked-poster" src="{{ t.poster }}" alt="" loading="lazy">
+        {% else %}
+          <div class="tracked-poster tmdb-poster-ph">{{ '📺' if t.type == 'tv' else '🎬' }}</div>
+        {% endif %}
+        <div class="tracked-info">
+          <div class="tracked-title">{{ t.title }}{% if t.year %} ({{ t.year }}){% endif %}</div>
+          <div class="tracked-sub">
+            <span class="badge">{{ 'Série' if t.type == 'tv' else 'Film' }}</span>
+            {% if t.quality %}<span class="badge">{{ t.quality }}</span>{% endif %}
+            {% if t.auto_download and t.source == 'ddl' %}
+              <span class="badge badge-auto">⚡ Auto DDL</span>
+              {% if t.auto_season %}<span class="badge">S{{ t.auto_season }}</span>{% endif %}
+              {% if t.auto_episodes %}<span class="badge">ép. {{ t.auto_episodes }}</span>{% endif %}
+              {% if t.auto_folder %}<span class="badge" title="Dossier de destination">📁 {{ t.auto_folder }}</span>{% endif %}
+            {% else %}
+              <span class="badge badge-muted">auto-download désactivé</span>
+            {% endif %}
+            <span class="tracked-meta">
+              {% if t.requested_by %}demandé par {{ t.requested_by }}{% endif %}
+              {% if t.requested_at %} · {{ t.requested_at }}{% endif %}
+            </span>
+          </div>
+        </div>
+        <div class="tracked-actions">
+          <button type="button" class="btn btn-ghost btn-small"
+                  data-tracked='{{ t|tojson }}' onclick="openTrackedEdit(this)">Éditer</button>
+          <form method="post" action="{{ url_for('tracked_delete') }}">
+            <input type="hidden" name="tmdb_id" value="{{ t.tmdb_id }}">
+            <input type="hidden" name="type" value="{{ t.type }}">
+            <input type="hidden" name="quality" value="{{ t.quality }}">
+            <button type="submit" class="btn btn-icon" title="Retirer ce titre">✕</button>
+          </form>
+        </div>
+      </div>
+    {% else %}
+      <p class="settings-empty">Aucune demande traitée par le bot pour l'instant.</p>
+    {% endfor %}
+  </div>
+</div>
+
+{% include "settings/_tracked_config_modal.html" %}
+
+<script>
+  function toggleBotSecret() {
+    var field = document.getElementById("bot-secret-field");
+    var btn = document.getElementById("bot-secret-toggle");
+    var hidden = field.type === "password";
+    field.type = hidden ? "text" : "password";
+    btn.textContent = hidden ? "Masquer" : "Afficher";
+  }
+  document.getElementById("bot-secret-field").type = "password";
+</script>

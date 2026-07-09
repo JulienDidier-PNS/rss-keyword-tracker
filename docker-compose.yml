@@ -8,3 +8,23 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/data
+
+  # Bot WhatsApp (canal de communauté) : voir whatsapp-bot/README.md pour la
+  # configuration (BOT_SHARED_SECRET à récupérer sur Configuration -> Demandes
+  # (WhatsApp) une fois rss-tracker démarré, puis scan du QR code affiché dans
+  # les logs de ce service). Optionnel : commente ce service si tu ne veux pas
+  # du bot.
+  whatsapp-bot:
+    build: ./whatsapp-bot
+    image: rss-tracker-whatsapp-bot:latest
+    container_name: rss-tracker-whatsapp-bot
+    restart: unless-stopped
+    depends_on:
+      - rss-tracker
+    environment:
+      - FLASK_BASE_URL=http://rss-tracker:8000
+      - BOT_SHARED_SECRET=${BOT_SHARED_SECRET:?voir .env.example}
+      - ALLOWED_GROUP_JIDS=${ALLOWED_GROUP_JIDS:-}
+      - DEFAULT_QUALITY=${DEFAULT_QUALITY:-1080p}
+    volumes:
+      - ./whatsapp-bot/auth:/app/auth

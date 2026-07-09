@@ -1,3 +1,4 @@
+import hmac
 import math
 import secrets
 
@@ -10,6 +11,7 @@ from fetcher import (
     add_tracked_title,
     backfill_posters,
     clean_media_name,
+    create_bot_request,
     detect_media_type,
     dismiss_article,
     ensure_config_exists,
@@ -18,12 +20,15 @@ from fetcher import (
     fetch_hydracker_links,
     fetch_hydracker_torrents,
     fetch_once,
+    get_bot_shared_secret,
     get_connection,
     get_seconds_until_next_fetch,
     hydracker_login,
     init_db,
+    list_bot_requests,
     load_config,
     purge_old_articles,
+    regenerate_bot_shared_secret,
     rematch_all,
     remove_feed,
     remove_size_rule,
@@ -113,6 +118,8 @@ def common_context():
         "next_fetch_seconds": get_seconds_until_next_fetch(),
         "quality_choices": QUALITY_CHOICES,
         "size_rules": config.get("size_rules", []),
+        "bot_requests": list_bot_requests(),
+        "bot_shared_secret": get_bot_shared_secret(),
     }
 
 
@@ -211,6 +218,7 @@ SETTINGS_SECTIONS = [
     ("hydracker", "Hydracker"),
     ("jdownloader", "JDownloader"),
     ("size_rules", "Règles de taille"),
+    ("bot_requests", "Demandes (WhatsApp)"),
 ]
 SETTINGS_SECTION_KEYS = {key for key, _ in SETTINGS_SECTIONS}
 
@@ -441,6 +449,49 @@ def size_rules_delete():
     media_type = request.form.get("media_type", "any")
     remove_size_rule(quality, media_type)
     return redirect(request.referrer or url_for("settings_section", section="size_rules"))
+
+
+@app.route("/settings/bot-secret/regenerate", methods=["POST"])
+def bot_secret_regenerate():
+    """Invalide l'ancien secret : le bot WhatsApp devra être reconfiguré avec le
+    nouveau (fichier .env du service whatsapp-bot) pour continuer à créer des
+    demandes."""
+    regenerate_bot_shared_secret()
+    flash("Secret du bot régénéré — mets à jour le fichier .env du service whatsapp-bot.")
+    return redirect(request.referrer or url_for("settings_section", section="bot_requests"))
+
+
+@app.route("/api/bot/requests", methods=["POST"])
+def api_bot_requests():
+    """API interne appelée par le bot WhatsApp une fois qu'un utilisateur du
+    canal de communauté a confirmé un film/série (et, pour une série, choisi
+    saison/épisodes). Crée directement un titre suivi en DDL auto (qualité par
+    défaut 1080p), visible et modifiable sur la page Configuration → Demandes
+    (WhatsApp). Protégée par un secret partagé (header X-Bot-Secret) : cette
+    route n'a aucune authentification utilisateur, elle ne doit donc jamais
+    être exposée sans ce secret (voir get_bot_shared_secret)."""
+    provided = request.headers.get("X-Bot-Secret", "")
+    if not hmac.compare_digest(provided, get_bot_shared_secret()):
+        return {"ok": False, "error": "secret invalide"}, 401
+
+    data = request.get_json(silent=True) or {}
+    entry = create_bot_request(
+        data.get("tmdb_id"),
+        data.get("type", ""),
+        data.get("title", ""),
+        year=data.get("year", ""),
+        poster=data.get("poster"),
+        quality=data.get("quality", ""),
+        auto_season=data.get("auto_season", ""),
+        auto_episodes=data.get("auto_episodes", ""),
+        requested_by=data.get("requested_by", ""),
+    )
+    if entry is None:
+        return {"ok": False, "error": "tmdb_id, type et title sont requis"}, 400
+
+    rematch_all()
+    start_auto_download_for_entry(entry)
+    return {"ok": True, "entry": entry}
 
 
 @app.route("/jdownloader/send", methods=["POST"])

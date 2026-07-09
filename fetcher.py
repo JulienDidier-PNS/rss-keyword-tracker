@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import threading
@@ -800,14 +801,17 @@ def _resolve_hydracker_id(tmdb_id, tmdb_type, token):
 
 def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
                       auto_download=False, source="torrent", auto_season="", auto_episodes="",
-                      auto_folder=""):
+                      auto_folder="", origin="manual", requested_by=""):
     """Ajoute un titre suivi (dédup par tmdb_id + type + qualité) et résout tout
     de suite son id Hydracker. `auto_download`/`source`/`auto_season`/
     `auto_episodes` pilotent le téléchargement automatique dès l'apparition dans
     les flux (voir auto_download_ddl). `auto_folder` force un dossier de
     destination JDownloader propre à ce titre (prime sur le dossier calculé par
-    défaut) — utile pour ranger une série dans son propre dossier. Si le titre
-    est déjà suivi, sa config d'auto-download est mise à jour. Renvoie l'entrée
+    défaut) — utile pour ranger une série dans son propre dossier. `origin`
+    ("manual"/"whatsapp") et `requested_by` identifient les demandes créées par
+    le bot WhatsApp (voir create_bot_request), affichées sur leur propre page de
+    configuration. Si le titre est déjà suivi, sa config d'auto-download est
+    mise à jour (origin/requested_by ne sont pas écrasés). Renvoie l'entrée
     stockée (ou None)."""
     try:
         tmdb_id = int(tmdb_id)
@@ -820,6 +824,8 @@ def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
     auto_season = (auto_season or "").strip()
     auto_episodes = (auto_episodes or "").strip()
     auto_folder = (auto_folder or "").strip()
+    origin = "whatsapp" if origin == "whatsapp" else "manual"
+    requested_by = (requested_by or "").strip()
     config = load_config()
     token = config.get("hydracker_api_token", "").strip()
     tracked = config.setdefault("tracked_titles", [])
@@ -847,6 +853,9 @@ def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
         "auto_season": auto_season,
         "auto_episodes": auto_episodes,
         "auto_folder": auto_folder,
+        "origin": origin,
+        "requested_by": requested_by,
+        "requested_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") if origin == "whatsapp" else "",
         "hydracker_id": _resolve_hydracker_id(tmdb_id, ttype, token),
     }
     tracked.append(entry)
@@ -900,6 +909,60 @@ def update_tracked_title(tmdb_id, ttype, orig_quality, quality="", auto_download
         target["hydracker_id"] = _resolve_hydracker_id(tmdb_id, ttype, config.get("hydracker_api_token", "").strip())
     save_config(config)
     return target, None
+
+
+# ===== Bot WhatsApp (demandes de titres via un canal de communauté) =====
+
+DEFAULT_BOT_QUALITY = "1080p"
+
+
+def get_bot_shared_secret():
+    """Secret partagé avec le bot WhatsApp (header X-Bot-Secret sur l'API
+    interne /api/bot/requests) : généré une fois puis persisté, pour que
+    seul le processus du bot (qui le lit depuis sa propre config) puisse créer
+    des demandes."""
+    config = load_config()
+    secret = config.get("bot_shared_secret", "").strip()
+    if not secret:
+        secret = secrets.token_hex(24)
+        config["bot_shared_secret"] = secret
+        save_config(config)
+    return secret
+
+
+def regenerate_bot_shared_secret():
+    config = load_config()
+    secret = secrets.token_hex(24)
+    config["bot_shared_secret"] = secret
+    save_config(config)
+    return secret
+
+
+def list_bot_requests():
+    """Titres suivis créés par le bot WhatsApp (origin == "whatsapp"), les plus
+    récents d'abord — pour la page de configuration dédiée."""
+    config = load_config()
+    requests_ = [t for t in config.get("tracked_titles", []) if t.get("origin") == "whatsapp"]
+    requests_.sort(key=lambda t: t.get("requested_at") or "", reverse=True)
+    return requests_
+
+
+def create_bot_request(tmdb_id, ttype, title, year="", poster=None, quality="",
+                       auto_season="", auto_episodes="", requested_by=""):
+    """Crée un titre suivi à partir d'une demande WhatsApp confirmée par
+    l'utilisateur : qualité par défaut 1080p si non précisée, source toujours
+    "ddl" (le bot ne gère que le DDL auto — le torrent reste un choix manuel
+    depuis la page Titres suivis), auto-download toujours activé. Renvoie
+    l'entrée créée/mise à jour (ou None si tmdb_id/type/title manquants)."""
+    if not (tmdb_id and ttype and title):
+        return None
+    quality = (quality or "").strip() or DEFAULT_BOT_QUALITY
+    return add_tracked_title(
+        tmdb_id, ttype, title, year=year, poster=poster, quality=quality,
+        auto_download=True, source="ddl",
+        auto_season=auto_season, auto_episodes=auto_episodes,
+        origin="whatsapp", requested_by=requested_by,
+    )
 
 
 def remove_tracked_title(tmdb_id, ttype, quality=""):

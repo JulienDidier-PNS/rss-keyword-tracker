@@ -1,0 +1,17 @@
+{
+  "name": "rss-tracker-whatsapp-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bot WhatsApp (Baileys) pour demander des films/séries dans un canal de communauté, relié à rss-keyword-tracker.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test/logic.test.js && node test/flaskClient.test.js && node test/conversation.test.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
