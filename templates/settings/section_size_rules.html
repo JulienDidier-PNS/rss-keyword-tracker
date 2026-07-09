@@ -1,0 +1,49 @@
+<div class="settings-card">
+  <div class="settings-card-head">
+    <h2>Règles de taille</h2>
+    <p>
+      Limite la taille des liens envoyés en <strong>téléchargement automatique DDL</strong>
+      (JDownloader) — par exemple « 2160p → max 6 Go » pour ne jamais auto-télécharger
+      un remux BluRay 2160p de 60 Go. Une règle s'applique à tout lien dont la qualité
+      contient le texte saisi (vide = toutes qualités) ; un lien qui dépasse la taille
+      max est ignoré (un autre, plus petit, est essayé s'il existe). Un lien dont la
+      taille est inconnue n'est jamais bloqué. Ces règles ne concernent que
+      l'auto-téléchargement DDL, pas le téléchargement manuel.
+    </p>
+  </div>
+
+  <ul class="settings-list">
+    {% for r in size_rules %}
+      <li>
+        <div class="settings-list-main">
+          <span class="settings-list-title">
+            {{ r.quality if r.quality else "Toutes qualités" }}
+            <span class="badge">{{ {'movie': 'Film', 'series': 'Série'}.get(r.media_type, 'Film + Série') }}</span>
+          </span>
+          <span class="settings-list-sub">Max {{ r.max_gb }} Go</span>
+        </div>
+        <form method="post" action="{{ url_for('size_rules_delete') }}">
+          <input type="hidden" name="quality" value="{{ r.quality }}">
+          <input type="hidden" name="media_type" value="{{ r.media_type or 'any' }}">
+          <button type="submit" class="btn btn-icon" title="Supprimer cette règle">✕</button>
+        </form>
+      </li>
+    {% else %}
+      <li class="settings-empty">Aucune règle : aucune limite de taille n'est appliquée.</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="{{ url_for('size_rules_add') }}" class="settings-form settings-form-row">
+    <input type="text" name="quality" placeholder="Qualité (ex. 2160p) — vide = toutes" list="size-rule-qualities">
+    <datalist id="size-rule-qualities">
+      {% for q in quality_choices %}<option value="{{ q }}">{% endfor %}
+    </datalist>
+    <select name="media_type">
+      <option value="any">Film + Série</option>
+      <option value="movie">Film</option>
+      <option value="series">Série</option>
+    </select>
+    <input type="number" name="max_gb" placeholder="Taille max (Go)" min="0.1" step="0.1" required>
+    <button type="submit" class="btn btn-primary">Ajouter</button>
+  </form>
+</div>

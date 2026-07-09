@@ -6,6 +6,7 @@ from flask import Flask, flash, redirect, render_template, request, url_for
 from jdownloader import jd_send_links, jd_test_connection
 from fetcher import (
     add_feed,
+    add_size_rule,
     add_tracked_title,
     backfill_posters,
     clean_media_name,
@@ -25,14 +26,17 @@ from fetcher import (
     purge_old_articles,
     rematch_all,
     remove_feed,
+    remove_size_rule,
     remove_tracked_title,
     resolve_hydracker_link,
     set_hydracker_api_token,
     set_jdownloader_paths,
     set_jdownloader_settings,
     set_tmdb_api_key,
+    start_auto_download_for_entry,
     start_background_thread,
     tmdb_search,
+    update_tracked_title,
 )
 
 app = Flask(__name__)
@@ -108,6 +112,7 @@ def common_context():
         "jd_ready": bool(config.get("jd_email") and config.get("jd_password") and config.get("jd_device")),
         "next_fetch_seconds": get_seconds_until_next_fetch(),
         "quality_choices": QUALITY_CHOICES,
+        "size_rules": config.get("size_rules", []),
     }
 
 
@@ -205,6 +210,7 @@ SETTINGS_SECTIONS = [
     ("media", "Affiches / TMDB"),
     ("hydracker", "Hydracker"),
     ("jdownloader", "JDownloader"),
+    ("size_rules", "Règles de taille"),
 ]
 SETTINGS_SECTION_KEYS = {key for key, _ in SETTINGS_SECTIONS}
 
@@ -257,12 +263,66 @@ def tracked_add():
     year = request.form.get("year", "")
     poster = request.form.get("poster", "")
     quality = request.form.get("quality", "")
+    auto_download = request.form.get("auto_download") == "on"
+    source = request.form.get("source", "torrent")
+    auto_season = request.form.get("auto_season", "")
+    auto_episodes = request.form.get("auto_episodes", "")
+    auto_folder = request.form.get("auto_folder", "")
     if tmdb_id and ttype and title:
-        add_tracked_title(tmdb_id, ttype, title, year, poster or None, quality)
+        entry = add_tracked_title(
+            tmdb_id, ttype, title, year, poster or None, quality,
+            auto_download=auto_download, source=source,
+            auto_season=auto_season, auto_episodes=auto_episodes,
+            auto_folder=auto_folder,
+        )
         # Re-matche les articles déjà en base pour ce nouveau titre.
         rematch_all()
         label = title + (f" ({quality.strip()})" if quality.strip() else "")
-        flash(f'Titre suivi « {label} » ajouté.')
+        extra = ""
+        if auto_download and source == "ddl":
+            # Déclenche en arrière-plan l'auto-download des articles déjà présents.
+            if start_auto_download_for_entry(entry):
+                extra = " — auto-DDL activé (envoi vers JDownloader des titres déjà présents en cours)"
+            else:
+                extra = " — auto-DDL activé (se déclenchera dès l'apparition dans les flux)"
+        elif auto_download and source == "torrent":
+            extra = " — torrent : suivi seul, pas de téléchargement automatique"
+        flash(f'Titre suivi « {label} » ajouté.{extra}')
+    return redirect(request.referrer or url_for("settings_section", section="tracked"))
+
+
+@app.route("/tracked/update", methods=["POST"])
+def tracked_update():
+    tmdb_id = request.form.get("tmdb_id", "")
+    ttype = request.form.get("type", "")
+    orig_quality = request.form.get("orig_quality", "")
+    quality = request.form.get("quality", "")
+    auto_download = request.form.get("auto_download") == "on"
+    source = request.form.get("source", "torrent")
+    auto_season = request.form.get("auto_season", "")
+    auto_episodes = request.form.get("auto_episodes", "")
+    auto_folder = request.form.get("auto_folder", "")
+    entry, error = update_tracked_title(
+        tmdb_id, ttype, orig_quality, quality,
+        auto_download=auto_download, source=source,
+        auto_season=auto_season, auto_episodes=auto_episodes, auto_folder=auto_folder,
+    )
+    if error:
+        flash(f"Modification impossible : {error}")
+    else:
+        # La qualité a pu changer : on recale les correspondances des articles.
+        rematch_all()
+        extra = ""
+        if auto_download and source == "ddl":
+            # Déclenche les articles déjà présents non encore auto-téléchargés
+            # (utile si l'auto-DDL vient d'être activé sur ce titre).
+            if start_auto_download_for_entry(entry):
+                extra = " — auto-DDL (déclenchement des titres déjà présents en cours)"
+            else:
+                extra = " — auto-DDL activé (se déclenchera dès l'apparition dans les flux)"
+        elif auto_download and source == "torrent":
+            extra = " — torrent : suivi seul, pas de téléchargement automatique"
+        flash(f"Titre suivi « {entry.get('title')} » mis à jour.{extra}")
     return redirect(request.referrer or url_for("settings_section", section="tracked"))
 
 
@@ -363,6 +423,24 @@ def settings_jdownloader_paths():
     )
     flash("Dossiers JDownloader enregistrés.")
     return redirect(request.referrer or url_for("settings"))
+
+
+@app.route("/settings/size-rules/add", methods=["POST"])
+def size_rules_add():
+    quality = request.form.get("quality", "")
+    media_type = request.form.get("media_type", "any")
+    max_gb = request.form.get("max_gb", "")
+    add_size_rule(quality, media_type, max_gb)
+    flash("Règle de taille ajoutée.")
+    return redirect(request.referrer or url_for("settings_section", section="size_rules"))
+
+
+@app.route("/settings/size-rules/delete", methods=["POST"])
+def size_rules_delete():
+    quality = request.form.get("quality", "")
+    media_type = request.form.get("media_type", "any")
+    remove_size_rule(quality, media_type)
+    return redirect(request.referrer or url_for("settings_section", section="size_rules"))
 
 
 @app.route("/jdownloader/send", methods=["POST"])

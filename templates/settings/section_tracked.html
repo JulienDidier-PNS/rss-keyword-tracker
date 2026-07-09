@@ -5,8 +5,10 @@
       Cherche un film ou une série et choisis <strong>l'entrée exacte</strong> :
       le matching se fait ensuite sur sa référence TMDB, sans faux positif.
       Hydracker est identifié en exact ; pour Torr9, le nom de release est
-      confirmé via TMDB. Ajoute le même titre plusieurs fois avec des qualités
-      différentes pour n'en garder que certaines.
+      confirmé via TMDB. À l'ajout, tu peux activer le <strong>téléchargement
+      automatique</strong> (DDL via JDownloader) dès qu'un titre apparaît dans
+      les flux. Utilise <strong>Éditer</strong> pour modifier ces réglages sans
+      retirer le titre.
     </p>
   </div>
 
@@ -33,15 +35,27 @@
           <div class="tracked-sub">
             <span class="badge">{{ 'Série' if t.type == 'tv' else 'Film' }}</span>
             {% if t.quality %}<span class="badge">{{ t.quality }}</span>{% endif %}
+            {% if t.auto_download and t.source == 'ddl' %}
+              <span class="badge badge-auto">⚡ Auto DDL</span>
+              {% if t.auto_season %}<span class="badge">S{{ t.auto_season }}</span>{% endif %}
+              {% if t.auto_episodes %}<span class="badge">ép. {{ t.auto_episodes }}</span>{% endif %}
+              {% if t.auto_folder %}<span class="badge" title="Dossier de destination">📁 {{ t.auto_folder }}</span>{% endif %}
+            {% elif t.auto_download and t.source == 'torrent' %}
+              <span class="badge badge-muted">torrent · suivi seul</span>
+            {% endif %}
             <span class="tracked-meta">TMDB #{{ t.tmdb_id }}{% if t.hydracker_id %} · Hydracker ✓{% endif %}</span>
           </div>
         </div>
-        <form method="post" action="{{ url_for('tracked_delete') }}">
-          <input type="hidden" name="tmdb_id" value="{{ t.tmdb_id }}">
-          <input type="hidden" name="type" value="{{ t.type }}">
-          <input type="hidden" name="quality" value="{{ t.quality }}">
-          <button type="submit" class="btn btn-icon" title="Retirer ce titre">✕</button>
-        </form>
+        <div class="tracked-actions">
+          <button type="button" class="btn btn-ghost btn-small"
+                  data-tracked='{{ t|tojson }}' onclick="openTrackedEdit(this)">Éditer</button>
+          <form method="post" action="{{ url_for('tracked_delete') }}">
+            <input type="hidden" name="tmdb_id" value="{{ t.tmdb_id }}">
+            <input type="hidden" name="type" value="{{ t.type }}">
+            <input type="hidden" name="quality" value="{{ t.quality }}">
+            <button type="submit" class="btn btn-icon" title="Retirer ce titre">✕</button>
+          </form>
+        </div>
       </div>
     {% else %}
       <p class="settings-empty">Aucun titre suivi. Cherche un film ou une série ci-dessus.</p>
@@ -49,8 +63,92 @@
   </div>
 </div>
 
+<dialog id="tracked-config" class="article-modal tracked-config-modal">
+  <button type="button" class="modal-close" onclick="closeTrackedConfig()" aria-label="Fermer">✕</button>
+  <form method="post" action="{{ url_for('tracked_add') }}" class="tracked-config-form" id="tracked-config-form">
+    <input type="hidden" name="tmdb_id">
+    <input type="hidden" name="type">
+    <input type="hidden" name="title">
+    <input type="hidden" name="year">
+    <input type="hidden" name="poster">
+    <input type="hidden" name="orig_quality">
+
+    <h2 id="tc-title">Ajouter un titre</h2>
+    <div><span class="badge" id="tc-badge"></span></div>
+
+    <div class="tc-field">
+      <label class="settings-label" for="tc-quality">Qualité préférée</label>
+      <select id="tc-quality" name="quality">
+        <option value="">Toutes qualités</option>
+        {% for q in quality_choices %}<option value="{{ q }}">{{ q }}</option>{% endfor %}
+      </select>
+    </div>
+
+    <label class="tc-check">
+      <input type="checkbox" id="tc-auto" name="auto_download" onchange="tcToggle()">
+      Télécharger automatiquement dès l'apparition dans les flux
+    </label>
+
+    <div id="tc-auto-opts" style="display:none">
+      <div class="tc-field">
+        <span class="settings-label">Source de téléchargement</span>
+        <label class="tc-radio">
+          <input type="radio" name="source" value="ddl" checked onchange="tcToggle()">
+          DDL — envoi automatique vers JDownloader
+        </label>
+        <label class="tc-radio">
+          <input type="radio" name="source" value="torrent" onchange="tcToggle()">
+          Torrent — suivi seul, pas de téléchargement auto
+        </label>
+      </div>
+
+      <div id="tc-folder-field" class="tc-field" style="display:none">
+        <label class="settings-label" for="tc-folder">Dossier de destination <span class="tc-hint">(vide = dossier par défaut selon le type)</span></label>
+        <input type="text" id="tc-folder" name="auto_folder" placeholder="ex. F:/SERIES/Ma Série" autocomplete="off">
+      </div>
+
+      <div id="tc-series" class="tc-field" style="display:none">
+        <label class="settings-label" for="tc-season">Saison à télécharger <span class="tc-hint">(vide = toutes)</span></label>
+        <input type="text" id="tc-season" name="auto_season" placeholder="ex. 2" autocomplete="off" inputmode="numeric">
+        <label class="settings-label" for="tc-episodes">Épisodes <span class="tc-hint">(vide = tous — ex. 1,3,5-8)</span></label>
+        <input type="text" id="tc-episodes" name="auto_episodes" placeholder="ex. 1,3,5-8" autocomplete="off">
+      </div>
+
+      <p id="tc-note" class="settings-help"></p>
+    </div>
+
+    <div class="tc-actions">
+      <button type="button" class="btn btn-ghost" onclick="closeTrackedConfig()">Annuler</button>
+      <button type="submit" class="btn btn-primary" id="tc-submit">Ajouter</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
   var QUALITIES = {{ quality_choices|tojson }};
+  var JD_READY = {{ 'true' if jd_ready else 'false' }};
+  var JD_MOVIES_FOLDER = {{ jd_movies_folder|tojson }};
+  var JD_SERIES_FOLDER = {{ jd_series_folder|tojson }};
+  var JD_MOVIES_SUBFOLDER = {{ 'true' if jd_movies_subfolder else 'false' }};
+  var JD_SERIES_SUBFOLDER = {{ 'true' if jd_series_subfolder else 'false' }};
+  var TRACKED_ADD_URL = "{{ url_for('tracked_add') }}";
+  var TRACKED_UPDATE_URL = "{{ url_for('tracked_update') }}";
+  var tcIsSeries = false;
+
+  // Reproduit le dossier calculé par défaut côté serveur (jd_destination_for),
+  // affiché en placeholder pour montrer où le titre irait sans dossier custom.
+  function tcDefaultFolder(r) {
+    var isSeries = r.type === "tv";
+    var base = (isSeries ? JD_SERIES_FOLDER : JD_MOVIES_FOLDER) || "";
+    if (!base) return "";
+    base = base.replace(/[\/\\]+$/, "");
+    var sub = isSeries ? JD_SERIES_SUBFOLDER : JD_MOVIES_SUBFOLDER;
+    if (sub && r.title) {
+      var sep = base.indexOf("\\") >= 0 ? "\\" : "/";
+      return base + sep + r.title;
+    }
+    return base;
+  }
 
   function searchTmdb() {
     var q = document.getElementById("tmdb-q").value;
@@ -99,16 +197,11 @@
 
     var actions = document.createElement("div");
     actions.className = "tmdb-actions";
-    var sel = document.createElement("select");
-    var opts = '<option value="">Toutes qualités</option>';
-    QUALITIES.forEach(function (q) { opts += '<option value="' + q + '">' + q + "</option>"; });
-    sel.innerHTML = opts;
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "btn btn-primary btn-small";
-    btn.textContent = "Ajouter";
-    btn.onclick = function () { addTracked(r, sel.value); };
-    actions.appendChild(sel);
+    btn.textContent = "Ajouter…";
+    btn.onclick = function () { openTrackedConfig(r); };
     actions.appendChild(btn);
     info.appendChild(actions);
 
@@ -116,24 +209,103 @@
     return row;
   }
 
-  function addTracked(r, quality) {
-    var f = document.createElement("form");
-    f.method = "post";
-    f.action = "{{ url_for('tracked_add') }}";
-    function hid(name, value) {
-      var i = document.createElement("input");
-      i.type = "hidden";
-      i.name = name;
-      i.value = value == null ? "" : value;
-      f.appendChild(i);
-    }
-    hid("tmdb_id", r.tmdb_id);
-    hid("type", r.type);
-    hid("title", r.title);
-    hid("year", r.year);
-    hid("poster", r.poster_url || "");
-    hid("quality", quality);
-    document.body.appendChild(f);
-    f.submit();
+  // Remplit et ouvre la modale, aussi bien pour l'ajout que pour l'édition.
+  // v : {action, heading, submitLabel, tmdb_id, type, title, year, poster,
+  //      quality, orig_quality, auto_download, source, auto_season,
+  //      auto_episodes, auto_folder}
+  function tcFill(v) {
+    tcIsSeries = v.type === "tv";
+    var f = document.getElementById("tracked-config-form");
+    f.setAttribute("action", v.action);
+    document.getElementById("tc-submit").textContent = v.submitLabel;
+    document.getElementById("tc-title").textContent = v.heading;
+    document.getElementById("tc-badge").textContent = v.type === "tv" ? "Série" : "Film";
+
+    f.elements["tmdb_id"].value = v.tmdb_id;
+    f.elements["type"].value = v.type;
+    f.elements["title"].value = v.title;
+    f.elements["year"].value = v.year || "";
+    f.elements["poster"].value = v.poster || "";
+    f.elements["orig_quality"].value = v.orig_quality || "";
+    f.elements["quality"].value = v.quality || "";
+
+    document.getElementById("tc-auto").checked = !!v.auto_download;
+    var srcVal = v.source === "ddl" ? "ddl" : "torrent";
+    var srcEl = f.querySelector('input[name="source"][value="' + srcVal + '"]');
+    if (srcEl) srcEl.checked = true;
+
+    f.elements["auto_season"].value = v.auto_season || "";
+    f.elements["auto_episodes"].value = v.auto_episodes || "";
+    f.elements["auto_folder"].value = v.auto_folder || "";
+    var def = tcDefaultFolder({ type: v.type, title: v.title });
+    document.getElementById("tc-folder").placeholder = def ? ("par défaut : " + def) : "ex. F:/SERIES/Ma Série";
+
+    tcToggle();
+    document.getElementById("tracked-config").showModal();
   }
+
+  function openTrackedConfig(r) {
+    tcFill({
+      action: TRACKED_ADD_URL,
+      heading: "Ajouter « " + r.title + (r.year ? " (" + r.year + ")" : "") + " »",
+      submitLabel: "Ajouter",
+      tmdb_id: r.tmdb_id, type: r.type, title: r.title, year: r.year,
+      poster: r.poster_url || "",
+      quality: "", orig_quality: "",
+      auto_download: false, source: "ddl",
+      auto_season: "", auto_episodes: "", auto_folder: "",
+    });
+  }
+
+  function openTrackedEdit(btn) {
+    var t = JSON.parse(btn.dataset.tracked);
+    tcFill({
+      action: TRACKED_UPDATE_URL,
+      heading: "Modifier « " + t.title + (t.year ? " (" + t.year + ")" : "") + " »",
+      submitLabel: "Enregistrer",
+      tmdb_id: t.tmdb_id, type: t.type, title: t.title, year: t.year,
+      poster: t.poster || "",
+      // orig_quality identifie l'entrée à modifier même si on change la qualité.
+      quality: t.quality || "", orig_quality: t.quality || "",
+      auto_download: !!t.auto_download, source: t.source || "torrent",
+      auto_season: t.auto_season || "", auto_episodes: t.auto_episodes || "",
+      auto_folder: t.auto_folder || "",
+    });
+  }
+
+  function closeTrackedConfig() {
+    document.getElementById("tracked-config").close();
+  }
+
+  function tcToggle() {
+    var auto = document.getElementById("tc-auto").checked;
+    document.getElementById("tc-auto-opts").style.display = auto ? "block" : "none";
+
+    var sourceEl = document.querySelector('input[name="source"]:checked');
+    var source = sourceEl ? sourceEl.value : "ddl";
+
+    document.getElementById("tc-folder-field").style.display =
+      (auto && source === "ddl") ? "flex" : "none";
+    document.getElementById("tc-series").style.display =
+      (auto && source === "ddl" && tcIsSeries) ? "flex" : "none";
+
+    var note = document.getElementById("tc-note");
+    if (!auto) {
+      note.textContent = "";
+    } else if (source === "torrent") {
+      note.textContent = "Torrent : le titre est suivi, mais rien n'est téléchargé automatiquement (comportement actuel).";
+    } else if (!JD_READY) {
+      note.textContent = "⚠ JDownloader n'est pas configuré (Configuration → JDownloader) : l'auto-DDL ne pourra rien envoyer tant que ce n'est pas fait.";
+    } else {
+      note.textContent = "DDL : seuls les liens gratuits (ton compte hébergeur / lien direct) sont envoyés à JDownloader ; les liens passant par le débrideur facturé sont ignorés. Des règles de taille globales (Configuration → Règles de taille) peuvent aussi exclure les liens trop volumineux (ex. un remux 2160p de 60 Go).";
+    }
+  }
+
+  (function () {
+    var modal = document.getElementById("tracked-config");
+    if (!modal) return;
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal) modal.close();
+    });
+  })();
 </script>

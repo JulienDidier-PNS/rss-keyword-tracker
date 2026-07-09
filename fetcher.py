@@ -12,6 +12,8 @@ from pathlib import Path
 import feedparser
 import requests
 
+from jdownloader import jd_send_links
+
 BASE_DIR = Path(__file__).resolve().parent
 # Séparé du code exprès : en déploiement Docker, DATA_DIR pointe vers un volume
 # monté (ex. /data) qui survit au remplacement de l'image lors d'une mise à
@@ -61,6 +63,9 @@ _QUALITY_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 _IMG_SRC_RE = re.compile(r'<img[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
+# Priorité aux liens en français pour l'auto-download DDL (l'utilisateur est
+# francophone) : un lien MULTI/FRENCH est proposé avant un lien anglais seul.
+_FRENCH_LANG_RE = re.compile(r"\b(true[- ]?french|french|multi|vff?|vfq|vf|vostfr)\b", re.IGNORECASE)
 
 
 def normalize(text):
@@ -218,6 +223,41 @@ def set_jdownloader_paths(movies_folder, series_folder, movies_subfolder, series
     config["jd_series_folder"] = (series_folder or "").strip()
     config["jd_movies_subfolder"] = bool(movies_subfolder)
     config["jd_series_subfolder"] = bool(series_subfolder)
+    save_config(config)
+
+
+def add_size_rule(quality, media_type, max_gb):
+    """Ajoute (ou met à jour, dédup par quality+media_type) une règle globale
+    limitant la taille des liens DDL envoyés en téléchargement automatique — ex.
+    "2160p" + "movie" + 6 Go pour ne jamais auto-télécharger un remux BluRay
+    massif. `media_type` vaut "movie", "series", ou "any" (les deux)."""
+    quality = (quality or "").strip()
+    media_type = media_type if media_type in ("movie", "series") else "any"
+    try:
+        max_gb = float(max_gb)
+    except (TypeError, ValueError):
+        return
+    if max_gb <= 0:
+        return
+    config = load_config()
+    rules = config.setdefault("size_rules", [])
+    for r in rules:
+        if normalize(r.get("quality", "")) == normalize(quality) and (r.get("media_type") or "any") == media_type:
+            r["max_gb"] = max_gb
+            save_config(config)
+            return
+    rules.append({"quality": quality, "media_type": media_type, "max_gb": max_gb})
+    save_config(config)
+
+
+def remove_size_rule(quality, media_type):
+    quality = (quality or "").strip()
+    media_type = media_type if media_type in ("movie", "series") else "any"
+    config = load_config()
+    config["size_rules"] = [
+        r for r in config.get("size_rules", [])
+        if not (normalize(r.get("quality", "")) == normalize(quality) and (r.get("media_type") or "any") == media_type)
+    ]
     save_config(config)
 
 
@@ -422,11 +462,16 @@ def fetch_hydracker_links(title_id, token):
         if item.get("id") is None:
             continue
         host = item.get("host") or {}
+        try:
+            size_bytes = float(item.get("taille"))
+        except (TypeError, ValueError):
+            size_bytes = None
         links.append(
             {
                 "id": item.get("id"),
                 "quality": _qual_label(item),
                 "size": _format_size(item.get("taille")),
+                "size_bytes": size_bytes,
                 "host": host.get("name") or "",
                 "langs": _langs(item),
                 "saison": item.get("saison"),
@@ -616,6 +661,10 @@ def init_db():
         conn.execute("ALTER TABLE articles ADD COLUMN poster_url TEXT")
     if "published_at" not in existing_columns:
         conn.execute("ALTER TABLE articles ADD COLUMN published_at TEXT")
+    # 1 = auto-download DDL déjà traité pour cet article (évite de re-résoudre /
+    # re-télécharger à chaque cycle ou lors du déclenchement rétroactif).
+    if "auto_downloaded" not in existing_columns:
+        conn.execute("ALTER TABLE articles ADD COLUMN auto_downloaded INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -749,32 +798,108 @@ def _resolve_hydracker_id(tmdb_id, tmdb_type, token):
     return None
 
 
-def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality=""):
+def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
+                      auto_download=False, source="torrent", auto_season="", auto_episodes="",
+                      auto_folder=""):
     """Ajoute un titre suivi (dédup par tmdb_id + type + qualité) et résout tout
-    de suite son id Hydracker."""
+    de suite son id Hydracker. `auto_download`/`source`/`auto_season`/
+    `auto_episodes` pilotent le téléchargement automatique dès l'apparition dans
+    les flux (voir auto_download_ddl). `auto_folder` force un dossier de
+    destination JDownloader propre à ce titre (prime sur le dossier calculé par
+    défaut) — utile pour ranger une série dans son propre dossier. Si le titre
+    est déjà suivi, sa config d'auto-download est mise à jour. Renvoie l'entrée
+    stockée (ou None)."""
     try:
         tmdb_id = int(tmdb_id)
     except (TypeError, ValueError):
-        return
+        return None
     quality = (quality or "").strip()
+    # Seul "ddl" active un vrai téléchargement auto ; "torrent" = suivi seul.
+    source = "ddl" if source == "ddl" else "torrent"
+    auto_download = bool(auto_download)
+    auto_season = (auto_season or "").strip()
+    auto_episodes = (auto_episodes or "").strip()
+    auto_folder = (auto_folder or "").strip()
     config = load_config()
+    token = config.get("hydracker_api_token", "").strip()
     tracked = config.setdefault("tracked_titles", [])
     for t in tracked:
         if t.get("tmdb_id") == tmdb_id and t.get("type") == ttype and (t.get("quality") or "") == quality:
-            return
-    token = config.get("hydracker_api_token", "").strip()
-    tracked.append(
-        {
-            "tmdb_id": tmdb_id,
-            "type": ttype,
-            "title": title,
-            "year": year,
-            "poster": poster,
-            "quality": quality,
-            "hydracker_id": _resolve_hydracker_id(tmdb_id, ttype, token),
-        }
-    )
+            # Déjà suivi : on met simplement à jour sa config d'auto-download.
+            t["auto_download"] = auto_download
+            t["source"] = source
+            t["auto_season"] = auto_season
+            t["auto_episodes"] = auto_episodes
+            t["auto_folder"] = auto_folder
+            if t.get("hydracker_id") is None:
+                t["hydracker_id"] = _resolve_hydracker_id(tmdb_id, ttype, token)
+            save_config(config)
+            return t
+    entry = {
+        "tmdb_id": tmdb_id,
+        "type": ttype,
+        "title": title,
+        "year": year,
+        "poster": poster,
+        "quality": quality,
+        "auto_download": auto_download,
+        "source": source,
+        "auto_season": auto_season,
+        "auto_episodes": auto_episodes,
+        "auto_folder": auto_folder,
+        "hydracker_id": _resolve_hydracker_id(tmdb_id, ttype, token),
+    }
+    tracked.append(entry)
     save_config(config)
+    return entry
+
+
+def update_tracked_title(tmdb_id, ttype, orig_quality, quality="", auto_download=False,
+                         source="torrent", auto_season="", auto_episodes="", auto_folder=""):
+    """Modifie un titre suivi identifié par (tmdb_id, type, ancienne qualité) sans
+    le supprimer/recréer : met à jour sa qualité et toute sa config d'auto-download.
+    Renvoie (entry, error). `error` est un message si le titre est introuvable ou
+    si la nouvelle qualité entre en collision avec une autre entrée du même titre."""
+    try:
+        tmdb_id = int(tmdb_id)
+    except (TypeError, ValueError):
+        return None, "identifiant invalide"
+    orig_quality = (orig_quality or "").strip()
+    quality = (quality or "").strip()
+    source = "ddl" if source == "ddl" else "torrent"
+    auto_download = bool(auto_download)
+    auto_season = (auto_season or "").strip()
+    auto_episodes = (auto_episodes or "").strip()
+    auto_folder = (auto_folder or "").strip()
+
+    config = load_config()
+    tracked = config.get("tracked_titles", [])
+    target = None
+    for t in tracked:
+        if t.get("tmdb_id") == tmdb_id and t.get("type") == ttype and (t.get("quality") or "") == orig_quality:
+            target = t
+            break
+    if target is None:
+        return None, "titre suivi introuvable"
+
+    # Changer la qualité modifie la clé de dédup : on refuse si elle percute une
+    # autre entrée existante du même titre.
+    if quality != orig_quality:
+        for t in tracked:
+            if t is not target and t.get("tmdb_id") == tmdb_id and t.get("type") == ttype \
+                    and (t.get("quality") or "") == quality:
+                return None, "un titre suivi avec cette qualité existe déjà"
+
+    target["quality"] = quality
+    target["auto_download"] = auto_download
+    target["source"] = source
+    target["auto_season"] = auto_season
+    target["auto_episodes"] = auto_episodes
+    target["auto_folder"] = auto_folder
+    if target.get("hydracker_id") is None:
+        target["hydracker_id"] = _resolve_hydracker_id(tmdb_id, ttype, config.get("hydracker_api_token", "").strip())
+    save_config(config)
+    return target, None
 
 
 def remove_tracked_title(tmdb_id, ttype, quality=""):
@@ -808,6 +933,288 @@ def refresh_tracked_hydracker_ids():
                 changed = True
     if changed:
         save_config(config)
+
+
+# ===== Téléchargement automatique DDL (JDownloader) =====
+
+def parse_episode_spec(spec):
+    """Transforme une spec d'épisodes ("1,3,5-8") en set d'entiers. Renvoie None
+    si la spec est vide (= tous les épisodes de la ou des saison(s) choisie(s))."""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    episodes = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_str, _, end_str = part.partition("-")
+            try:
+                start, end = int(start_str), int(end_str)
+            except ValueError:
+                continue
+            if start > end:
+                start, end = end, start
+            episodes.update(range(start, end + 1))
+        else:
+            try:
+                episodes.add(int(part))
+            except ValueError:
+                continue
+    return episodes or None
+
+
+def _episode_int(link):
+    try:
+        return int(link.get("episode"))
+    except (TypeError, ValueError):
+        return None
+
+
+def jd_destination_for(media_type, clean_title, config):
+    """Dossier de destination JDownloader selon le type de média et les réglages.
+    Port serveur de la logique JS `jdDestination`, pour l'auto-download."""
+    is_series = media_type == "series"
+    base = (config.get("jd_series_folder") if is_series else config.get("jd_movies_folder")) or ""
+    base = base.strip()
+    if not base:
+        return ""
+    base = re.sub(r"[\\/]+$", "", base)
+    sub = config.get("jd_series_subfolder", True) if is_series else config.get("jd_movies_subfolder", True)
+    if sub and clean_title:
+        sep = "\\" if "\\" in base else "/"
+        return f"{base}{sep}{clean_title}"
+    return base
+
+
+def _lang_pref_key(link):
+    """Clé de tri des liens : ceux en français/multi d'abord (0), le reste (1)."""
+    langs = " ".join(link.get("langs") or [])
+    return 0 if _FRENCH_LANG_RE.search(langs) else 1
+
+
+def _size_rule_ok(link, media_type, size_rules):
+    """Vérifie qu'un lien DDL respecte toutes les règles de taille globales
+    (Configuration → Règles de taille) dont le filtre qualité correspond (même
+    logique de sous-chaîne que le filtre qualité d'un titre suivi) et dont le
+    type de média correspond ("any" = tous types) — ex. une règle "2160p" / 6 Go
+    exclut un remux BluRay 2160p de 60 Go, sans toucher aux autres qualités.
+    Une règle dont on ne connaît pas la taille du lien ne bloque jamais (mieux
+    vaut autoriser que tout bloquer par excès de prudence sur une donnée absente)."""
+    if not size_rules:
+        return True
+    size_bytes = link.get("size_bytes")
+    lquality = normalize(link.get("quality") or "")
+    for rule in size_rules:
+        rquality = normalize(rule.get("quality") or "")
+        rtype = rule.get("media_type") or "any"
+        if rquality and rquality not in lquality:
+            continue
+        if rtype != "any" and rtype != media_type:
+            continue
+        max_gb = rule.get("max_gb")
+        if not max_gb or size_bytes is None:
+            continue
+        if size_bytes > float(max_gb) * (1024 ** 3):
+            return False
+    return True
+
+
+def _select_ddl_links(links, entry, media_type, size_rules=None):
+    """Filtre et regroupe les liens DDL Hydracker selon la config d'auto-download
+    d'un titre suivi (qualité voulue, et pour les séries saison/épisodes choisis)
+    et les règles de taille globales (voir _size_rule_ok).
+
+    Renvoie une liste de groupes [(clé, [liens...])] : un groupe par cible à
+    télécharger (un film, un épisode, ou un pack saison complète), chaque groupe
+    trié par préférence de langue — l'appelant n'envoie qu'un lien gratuit par
+    groupe. Pour les séries sans épisodes précis demandés, un pack saison
+    complète, s'il existe, est préféré aux épisodes un par un (évite les doublons)."""
+    nquality = normalize((entry.get("quality") or "").strip())
+    season = (entry.get("auto_season") or "").strip()
+    episodes = parse_episode_spec(entry.get("auto_episodes"))
+    size_rules = size_rules or []
+
+    def ok_quality(link):
+        return not nquality or nquality in normalize(link.get("quality") or "")
+
+    def ok_season(link):
+        return not season or str(link.get("saison")) == season
+
+    def ok_size(link):
+        return _size_rule_ok(link, media_type, size_rules)
+
+    pool = [
+        l for l in links
+        if ok_quality(l) and ok_size(l) and (media_type != "series" or ok_season(l))
+    ]
+
+    if media_type != "series":
+        return [(("single",), sorted(pool, key=_lang_pref_key))] if pool else []
+
+    if episodes is not None:
+        # Épisodes précis : on exclut les packs saison complète.
+        chosen = [l for l in pool if not l.get("full_saison") and _episode_int(l) in episodes]
+    else:
+        packs = [l for l in pool if l.get("full_saison")]
+        chosen = packs if packs else [l for l in pool if not l.get("full_saison")]
+
+    groups = {}
+    order = []
+    for link in chosen:
+        if link.get("full_saison"):
+            key = ("full", str(link.get("saison")))
+        else:
+            key = ("ep", str(link.get("saison")), str(_episode_int(link)))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(link)
+
+    return [(key, sorted(groups[key], key=_lang_pref_key)) for key in order]
+
+
+def auto_download_ddl(article, entry, config):
+    """Envoie à JDownloader les liens DDL Hydracker d'un article correspondant à
+    un titre suivi configuré en auto-download DDL, selon sa config (qualité,
+    saison/épisodes). N'envoie QUE des liens gratuits (compte hébergeur perso /
+    lien direct) : un lien qui passerait par le débrideur facturé est sauté.
+
+    Renvoie (status, message) avec status dans {"sent", "skipped", "error"}.
+    "error" signale un souci transitoire (config/token/réseau) qu'il vaut la
+    peine de réessayer plus tard ; "skipped" un cas définitif (rien de gratuit à
+    prendre) qu'on ne réessaiera pas."""
+    token = config.get("hydracker_api_token", "").strip()
+    if not token:
+        return "error", "token Hydracker manquant"
+    jd_email = config.get("jd_email", "")
+    jd_password = config.get("jd_password", "")
+    jd_device = config.get("jd_device", "")
+    if not (jd_email and jd_password and jd_device):
+        return "error", "JDownloader non configuré"
+
+    title_id = extract_hydracker_title_id(article.get("url"))
+    if not title_id:
+        # DDL = Hydracker uniquement (Torr9 ne fournit que des torrents).
+        return "skipped", "article non-Hydracker (DDL indisponible)"
+
+    media_type = detect_media_type(article.get("title", ""), article.get("feed_name", ""))
+    clean_title = clean_media_name(article.get("title", ""), media_type)
+    # Dossier propre au titre suivi s'il est renseigné (ex. ranger une série
+    # dans son propre dossier), sinon le dossier calculé selon le type de média.
+    custom_folder = (entry.get("auto_folder") or "").strip()
+    destination = custom_folder or jd_destination_for(media_type, clean_title, config)
+
+    links, err = fetch_hydracker_links(title_id, token)
+    if err:
+        return "error", err
+
+    size_rules = config.get("size_rules", [])
+    groups = _select_ddl_links(links, entry, media_type, size_rules)
+    if not groups:
+        return "skipped", "aucun lien DDL ne correspond (qualité/saison/épisodes/taille)"
+
+    sent = 0
+    skipped_paid = 0
+    for _key, group in groups:
+        for link in group:
+            result, rerr = resolve_hydracker_link(link.get("id"), token)
+            time.sleep(1.0)  # respecte la limite ~1 req/s de Hydracker
+            if rerr or not result:
+                continue
+            url = result.get("direct_url") or result.get("raw_url")
+            if not url:
+                continue
+            billing = result.get("billing")
+            free = result.get("source") in ("personal", "direct_url") and (not billing or billing == "none")
+            if not free:
+                # "Gratuit uniquement" : on ne déclenche pas le débrideur facturé.
+                skipped_paid += 1
+                continue
+            ok, _jderr = jd_send_links(
+                jd_email, jd_password, jd_device, url,
+                package_name=clean_title or None,
+                destination_folder=destination or None,
+                autostart=True,
+            )
+            if ok:
+                sent += 1
+                break  # une cible envoyée : on passe au groupe suivant
+
+    if sent:
+        msg = f"{sent} lien(s) envoyé(s) à JDownloader → {destination or 'dossier par défaut'}"
+        if skipped_paid:
+            msg += f" ({skipped_paid} sauté(s) car débrideur facturé)"
+        return "sent", msg
+    if skipped_paid:
+        return "skipped", "liens disponibles mais seulement via débrideur facturé (sautés)"
+    return "skipped", "aucun lien gratuit trouvé"
+
+
+def _mark_auto_downloaded(conn, article_id):
+    with _lock:
+        conn.execute("UPDATE articles SET auto_downloaded = 1 WHERE id = ?", (article_id,))
+        conn.commit()
+
+
+def _run_and_mark_auto_download(conn, article, entry, config):
+    """Lance auto_download_ddl pour un article et marque l'article comme traité
+    (sauf erreur transitoire, qu'on laisse réessayable). Renvoie le status."""
+    try:
+        status, message = auto_download_ddl(article, entry, config)
+    except Exception as exc:
+        status, message = "error", str(exc)
+    print(f"[auto-dl] {entry.get('title', '')} — {status} : {message}")
+    if status in ("sent", "skipped"):
+        _mark_auto_downloaded(conn, article["id"])
+    return status
+
+
+def trigger_auto_download_for_entry(entry):
+    """Déclenche l'auto-download DDL pour les articles Hydracker déjà en base qui
+    correspondent à ce titre suivi et n'ont pas encore été auto-téléchargés.
+    Utilisé à l'activation de l'auto-download sur un titre déjà présent dans les
+    flux (sans ça, un titre Hydracker déjà vu ne partirait jamais, la
+    déduplication par URL l'empêchant de réapparaître). Renvoie (sent, skipped,
+    errors)."""
+    if not (entry.get("auto_download") and entry.get("source") == "ddl"):
+        return 0, 0, 0
+    hid = entry.get("hydracker_id")
+    if hid is None:
+        return 0, 0, 0
+
+    config = load_config()
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, url, title, feed_name FROM articles "
+        "WHERE auto_downloaded = 0 AND url LIKE '%hydracker.com/titles/%'"
+    ).fetchall()
+
+    sent = skipped = errors = 0
+    for row in rows:
+        if extract_hydracker_title_id(row["url"]) != str(hid):
+            continue
+        article = {"id": row["id"], "url": row["url"], "title": row["title"], "feed_name": row["feed_name"]}
+        status = _run_and_mark_auto_download(conn, article, entry, config)
+        if status == "sent":
+            sent += 1
+        elif status == "skipped":
+            skipped += 1
+        else:
+            errors += 1
+    conn.close()
+    return sent, skipped, errors
+
+
+def start_auto_download_for_entry(entry):
+    """Lance trigger_auto_download_for_entry dans un thread (le déclenchement
+    rétroactif enchaîne des appels réseau lents : on ne bloque pas la requête)."""
+    if not (entry and entry.get("auto_download") and entry.get("source") == "ddl"
+            and entry.get("hydracker_id") is not None):
+        return False
+    threading.Thread(target=trigger_auto_download_for_entry, args=(entry,), daemon=True).start()
+    return True
 
 
 def resolve_title_tmdb(raw_title, api_key):
@@ -860,9 +1267,11 @@ def match_tracked_titles(title, summary, link, tracked_titles, tmdb_key):
       éviter une recherche TMDB inutile), puis confirmation exacte par (tmdb_id,
       type) résolu du titre de release.
 
-    Renvoie (confirmed, quality_rejected) : listes de noms de titres suivis.
-    Un titre avec une qualité imposée n'est confirmé que si cette qualité figure
-    aussi dans le titre/résumé (sinon compté comme "qualité refusée")."""
+    Renvoie (confirmed, quality_rejected) : deux listes d'*entrées* de titres
+    suivis (les dicts de config, pas seulement leurs noms — l'appelant a ainsi
+    accès à la config d'auto-download). Un titre avec une qualité imposée n'est
+    confirmé que si cette qualité figure aussi dans le titre/résumé (sinon compté
+    comme "qualité refusée")."""
     confirmed = []
     quality_rejected = []
     if not tracked_titles:
@@ -890,10 +1299,14 @@ def match_tracked_titles(title, summary, link, tracked_titles, tmdb_key):
             continue
 
         quality = (t.get("quality") or "").strip()
-        if quality and normalize(quality) not in haystack:
-            quality_rejected.append(t.get("title"))
+        # La qualité ne filtre que les releases classiques (Torr9), dont le titre
+        # porte le tag qualité. Pour Hydracker, la qualité vit au niveau des liens
+        # (choisie au moment du téléchargement), donc on ne rejette jamais un item
+        # Hydracker sur la qualité — sinon un titre Hydracker ne matcherait jamais.
+        if quality and hydra_id is None and normalize(quality) not in haystack:
+            quality_rejected.append(t)
         else:
-            confirmed.append(t.get("title"))
+            confirmed.append(t)
 
     return confirmed, quality_rejected
 
@@ -916,7 +1329,7 @@ def rematch_all():
         with _lock:
             conn.execute(
                 "UPDATE articles SET matched_keywords = ?, quality_ok = ? WHERE id = ?",
-                (", ".join(confirmed), quality_ok, row["id"]),
+                (", ".join(e.get("title", "") for e in confirmed), quality_ok, row["id"]),
             )
             conn.commit()
     conn.close()
@@ -1104,8 +1517,9 @@ def fetch_once():
             if is_dismissed(conn, link):
                 continue
 
-            matched, quality_rejected = match_tracked_titles(title, summary, link, tracked_titles, tmdb_key)
-            quality_ok = not quality_rejected or bool(matched)
+            confirmed, quality_rejected = match_tracked_titles(title, summary, link, tracked_titles, tmdb_key)
+            matched = [e.get("title", "") for e in confirmed]
+            quality_ok = not quality_rejected or bool(confirmed)
             published = entry.get("published", entry.get("updated", ""))
             published_at = extract_published_at(entry)
             download_url = extract_download_url(entry)
@@ -1118,7 +1532,7 @@ def fetch_once():
 
             try:
                 with _lock:
-                    conn.execute(
+                    cursor = conn.execute(
                         """INSERT INTO articles
                            (feed_name, feed_url, title, url, download_url, summary, published, published_at, matched_keywords, quality_ok, poster_url)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1139,7 +1553,19 @@ def fetch_once():
                     conn.commit()
                 new_count += 1
             except sqlite3.IntegrityError:
-                pass  # URL déjà connue
+                continue  # URL déjà connue
+
+            # Téléchargement auto DDL : dès qu'un nouvel article correspond à un
+            # titre suivi configuré en auto-download DDL, on lance l'envoi vers
+            # JDownloader (Hydracker uniquement). Un seul déclenchement par
+            # article suffit (même titre × qualités → même id Hydracker).
+            auto_entry = next(
+                (e for e in confirmed if e.get("auto_download") and e.get("source") == "ddl"),
+                None,
+            )
+            if auto_entry is not None and extract_hydracker_title_id(link):
+                article = {"id": cursor.lastrowid, "url": link, "title": title, "feed_name": feed_name}
+                _run_and_mark_auto_download(conn, article, auto_entry, config)
 
     conn.close()
     return new_count
