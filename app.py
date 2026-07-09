@@ -37,9 +37,11 @@ from fetcher import (
     set_hydracker_api_token,
     set_jdownloader_paths,
     set_jdownloader_settings,
+    set_tautulli_settings,
     set_tmdb_api_key,
     start_auto_download_for_entry,
     start_background_thread,
+    tautulli_test_connection,
     tmdb_search,
     update_tracked_title,
 )
@@ -59,11 +61,17 @@ purge_old_articles()
 # Premier pull synchrone AVANT que le serveur ne commence à répondre : sans
 # ça, une base vide au démarrage restait vide tant qu'on ne cliquait pas sur
 # "Vérifier maintenant", le premier cycle en arrière-plan n'ayant pas encore
-# eu le temps de tourner.
-fetch_once()
-# Recale les correspondances des articles déjà en base sur les titres suivis
-# actuels (utile après passage au matching TMDB, ou si config.json a été édité).
-rematch_all()
+# eu le temps de tourner. Filet de sécurité : un souci transitoire ici (ex.
+# base SQLite momentanément verrouillée juste après un redémarrage) ne doit
+# jamais empêcher l'appli de démarrer — le cycle en arrière-plan réessaiera.
+try:
+    fetch_once()
+    # Recale les correspondances des articles déjà en base sur les titres
+    # suivis actuels (utile après passage au matching TMDB, ou si config.json
+    # a été édité).
+    rematch_all()
+except Exception as exc:
+    print(f"[startup] premier cycle de vérification échoué (réessaiera en arrière-plan) : {exc}")
 start_background_thread()
 
 
@@ -120,6 +128,9 @@ def common_context():
         "size_rules": config.get("size_rules", []),
         "bot_requests": list_bot_requests(),
         "bot_shared_secret": get_bot_shared_secret(),
+        "tautulli_url": config.get("tautulli_url", ""),
+        "tautulli_api_key_set": bool(config.get("tautulli_api_key", "")),
+        "tautulli_ready": bool(config.get("tautulli_url") and config.get("tautulli_api_key")),
     }
 
 
@@ -218,6 +229,7 @@ SETTINGS_SECTIONS = [
     ("hydracker", "Hydracker"),
     ("jdownloader", "JDownloader"),
     ("size_rules", "Règles de taille"),
+    ("tautulli", "Tautulli / Plex"),
     ("bot_requests", "Demandes (WhatsApp)"),
 ]
 SETTINGS_SECTION_KEYS = {key for key, _ in SETTINGS_SECTIONS}
@@ -433,6 +445,32 @@ def settings_jdownloader_paths():
     return redirect(request.referrer or url_for("settings"))
 
 
+@app.route("/settings/tautulli", methods=["POST"])
+def settings_tautulli():
+    url = request.form.get("tautulli_url", "")
+    api_key = request.form.get("tautulli_api_key", "")
+    # Champ clé laissé vide = on garde celle déjà enregistrée (comme le mot de
+    # passe JDownloader).
+    if not api_key:
+        api_key = load_config().get("tautulli_api_key", "")
+    set_tautulli_settings(url, api_key)
+    flash("Paramètres Tautulli enregistrés.")
+    return redirect(request.referrer or url_for("settings_section", section="tautulli"))
+
+
+@app.route("/tautulli/test", methods=["POST"])
+def tautulli_test():
+    """Teste la connexion Tautulli. Utilise les identifiants saisis dans le
+    formulaire, ou ceux déjà enregistrés si le champ clé est laissé vide."""
+    config = load_config()
+    url = request.form.get("tautulli_url", "").strip() or config.get("tautulli_url", "")
+    api_key = request.form.get("tautulli_api_key", "") or config.get("tautulli_api_key", "")
+    data, error = tautulli_test_connection(url, api_key)
+    if error:
+        return {"ok": False, "error": error}
+    return {"ok": True, "server_name": data}
+
+
 @app.route("/settings/size-rules/add", methods=["POST"])
 def size_rules_add():
     quality = request.form.get("quality", "")
@@ -465,17 +503,23 @@ def bot_secret_regenerate():
 def api_bot_requests():
     """API interne appelée par le bot WhatsApp une fois qu'un utilisateur du
     canal de communauté a confirmé un film/série (et, pour une série, choisi
-    saison/épisodes). Crée directement un titre suivi en DDL auto (qualité par
-    défaut 1080p), visible et modifiable sur la page Configuration → Demandes
-    (WhatsApp). Protégée par un secret partagé (header X-Bot-Secret) : cette
-    route n'a aucune authentification utilisateur, elle ne doit donc jamais
-    être exposée sans ce secret (voir get_bot_shared_secret)."""
+    saison/épisodes). Vérifie d'abord si le média est déjà dans Plex (via
+    Tautulli, si configuré — voir check_plex_availability) avant de créer un
+    titre suivi en DDL auto, visible et modifiable sur la page Configuration →
+    Demandes (WhatsApp). Protégée par un secret partagé (header X-Bot-Secret) :
+    cette route n'a aucune authentification utilisateur, elle ne doit donc
+    jamais être exposée sans ce secret (voir get_bot_shared_secret).
+
+    Réponse : {"ok": true, "status": "created"|"already_available"|"needs_review",
+    "entry": {...} ou null, "message": "..."} — `message` est un texte complet
+    prêt à relayer tel quel à l'utilisateur WhatsApp (créé côté serveur pour
+    centraliser la formulation, plutôt que dupliquée côté bot)."""
     provided = request.headers.get("X-Bot-Secret", "")
     if not hmac.compare_digest(provided, get_bot_shared_secret()):
         return {"ok": False, "error": "secret invalide"}, 401
 
     data = request.get_json(silent=True) or {}
-    entry = create_bot_request(
+    status, entry, message = create_bot_request(
         data.get("tmdb_id"),
         data.get("type", ""),
         data.get("title", ""),
@@ -486,12 +530,14 @@ def api_bot_requests():
         auto_episodes=data.get("auto_episodes", ""),
         requested_by=data.get("requested_by", ""),
     )
-    if entry is None:
-        return {"ok": False, "error": "tmdb_id, type et title sont requis"}, 400
+    if status == "error":
+        return {"ok": False, "error": message}, 400
 
-    rematch_all()
-    start_auto_download_for_entry(entry)
-    return {"ok": True, "entry": entry}
+    if entry is not None:
+        rematch_all()
+        if status == "created":
+            start_auto_download_for_entry(entry)
+    return {"ok": True, "status": status, "entry": entry, "message": message}
 
 
 @app.route("/jdownloader/send", methods=["POST"])

@@ -38,7 +38,10 @@ async function createBotRequest(baseUrl, secret, payload, fetchImpl = fetch) {
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) return { ok: false, error: data.error || `erreur HTTP ${res.status} sur ${url}` };
-  return { ok: true, entry: data.entry };
+  // status: "created" / "already_available" / "needs_review" — message est un
+  // texte déjà prêt à relayer tel quel à l'utilisateur (formulé côté Flask,
+  // qui a toute la logique de vérification Plex/Tautulli).
+  return { ok: true, status: data.status, entry: data.entry, message: data.message };
 }
 
 module.exports = { searchTitles, createBotRequest };

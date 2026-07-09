@@ -6,7 +6,11 @@
       mentionne le bot, cherche un film/série, confirme, choisit saison/épisodes
       pour une série — le titre part directement en <strong>DDL automatique
       1080p</strong> par défaut. Modifie ici la qualité, le dossier ou les
-      épisodes sans avoir à repasser par le bot.
+      épisodes sans avoir à repasser par le bot. Si Tautulli est configuré
+      (Configuration → Tautulli / Plex), les titres déjà dans ta bibliothèque
+      Plex ne sont pas re-demandés ; en cas de doute, la demande est créée mais
+      marquée <strong>à vérifier</strong> et l'auto-download est mis en pause
+      — corrige-la ici pour lever le signalement.
     </p>
   </div>
 
@@ -54,11 +58,17 @@
             {% else %}
               <span class="badge badge-muted">auto-download désactivé</span>
             {% endif %}
+            {% if t.review_status == 'needs_review' %}
+              <span class="badge badge-review" title="{{ t.review_reason }}">⚠ à vérifier</span>
+            {% endif %}
             <span class="tracked-meta">
               {% if t.requested_by %}demandé par {{ t.requested_by }}{% endif %}
               {% if t.requested_at %} · {{ t.requested_at }}{% endif %}
             </span>
           </div>
+          {% if t.review_status == 'needs_review' and t.review_reason %}
+            <p class="tracked-review-reason">{{ t.review_reason }}</p>
+          {% endif %}
         </div>
         <div class="tracked-actions">
           <button type="button" class="btn btn-ghost btn-small"

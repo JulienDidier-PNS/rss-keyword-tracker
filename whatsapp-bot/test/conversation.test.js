@@ -22,21 +22,57 @@ const TV_RESULTS = [
 const MOVIE_RESULTS = [
   { tmdb_id: 438631, type: "movie", title: "Dune", year: "2021", poster_url: "http://x/dune.jpg" },
 ];
+// Titres dédiés pour simuler les statuts already_available / needs_review
+// renvoyés par Flask (voir check_plex_availability côté Python).
+const ALREADY_AVAILABLE_RESULTS = [
+  { tmdb_id: 999001, type: "movie", title: "Already Here", year: "2020", poster_url: null },
+];
+const NEEDS_REVIEW_RESULTS = [
+  { tmdb_id: 999002, type: "movie", title: "Ambiguous Movie", year: "2019", poster_url: null },
+];
 
 let lastBotRequestPayload = null;
 
 global.fetch = async (url, opts) => {
   if (url.includes("/tmdb/search")) {
-    const query = decodeURIComponent(url.split("q=")[1] || "");
-    const results = query.toLowerCase().includes("dune") ? MOVIE_RESULTS : TV_RESULTS;
+    const query = decodeURIComponent(url.split("q=")[1] || "").toLowerCase();
+    let results = TV_RESULTS;
+    if (query.includes("dune")) results = MOVIE_RESULTS;
+    else if (query.includes("already here")) results = ALREADY_AVAILABLE_RESULTS;
+    else if (query.includes("ambiguous")) results = NEEDS_REVIEW_RESULTS;
     return { ok: true, status: 200, json: async () => ({ ok: true, results }) };
   }
   if (url.includes("/api/bot/requests")) {
     lastBotRequestPayload = JSON.parse(opts.body);
+    const p = lastBotRequestPayload;
+
+    if (p.title === "Already Here") {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ok: true, status: "already_available", entry: null,
+          message: `« ${p.title} » est déjà disponible sur Plex — rien à télécharger.`,
+        }),
+      };
+    }
+    if (p.title === "Ambiguous Movie") {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ok: true, status: "needs_review", entry: { ...p, origin: "whatsapp", review_status: "needs_review" },
+          message: "Vérification Plex/Tautulli impossible (erreur réseau) : ajouté quand même, à vérifier manuellement.",
+        }),
+      };
+    }
+
+    // Reproduit le message que Flask calcule réellement (create_bot_request),
+    // pour vérifier que le bot le relaie tel quel sans le reformuler.
+    const seasonBit = p.type === "tv" ? ` (saison ${p.auto_season}, épisodes ${p.auto_episodes || "tous"})` : "";
+    const message = `« ${p.title} »${seasonBit} ajouté en téléchargement automatique (${p.quality}).`;
     return {
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, entry: { ...lastBotRequestPayload, origin: "whatsapp" } }),
+      json: async () => ({ ok: true, status: "created", entry: { ...p, origin: "whatsapp" }, message }),
     };
   }
   throw new Error(`URL inattendue dans le test : ${url}`);
@@ -116,7 +152,7 @@ async function main() {
 
     await bot.handleMessage(sock, textMessage("1,3,5-8"));
     assert.equal(sock.sent.length, 5);
-    assert.match(sock.sent[4].text, /C'est parti/);
+    assert.match(sock.sent[4].text, /ajouté en téléchargement automatique/);
     assert.match(sock.sent[4].text, /1080p/);
 
     assert.deepEqual(lastBotRequestPayload, {
@@ -145,7 +181,7 @@ async function main() {
 
     await bot.handleMessage(sock, textMessage("1"));
     assert.equal(sock.sent.length, 3);
-    assert.match(sock.sent[2].text, /C'est parti/);
+    assert.match(sock.sent[2].text, /ajouté en téléchargement automatique/);
     assert.doesNotMatch(sock.sent[2].text, /saison/i);
 
     assert.deepEqual(lastBotRequestPayload, {
@@ -159,6 +195,26 @@ async function main() {
       auto_episodes: "",
       requested_by: "Alice",
     });
+  });
+
+  await test("titre déjà disponible sur Plex : le message de Flask est relayé tel quel", async () => {
+    const sock = makeSock();
+    const sender = "33600000010@s.whatsapp.net";
+    await bot.handleMessage(sock, textMessage("@bot", { mentioned: true, senderJid: sender }));
+    await bot.handleMessage(sock, textMessage("already here", { senderJid: sender }));
+    await bot.handleMessage(sock, textMessage("1", { senderJid: sender }));
+    assert.equal(sock.sent.length, 3);
+    assert.match(sock.sent[2].text, /déjà disponible sur Plex/);
+  });
+
+  await test("vérification Plex incertaine : message 'à vérifier' relayé tel quel", async () => {
+    const sock = makeSock();
+    const sender = "33600000011@s.whatsapp.net";
+    await bot.handleMessage(sock, textMessage("@bot", { mentioned: true, senderJid: sender }));
+    await bot.handleMessage(sock, textMessage("ambiguous", { senderJid: sender }));
+    await bot.handleMessage(sock, textMessage("1", { senderJid: sender }));
+    assert.equal(sock.sent.length, 3);
+    assert.match(sock.sent[2].text, /à vérifier manuellement/);
   });
 
   await test("annuler nettoie la conversation à n'importe quelle étape", async () => {

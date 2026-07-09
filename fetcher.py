@@ -801,7 +801,8 @@ def _resolve_hydracker_id(tmdb_id, tmdb_type, token):
 
 def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
                       auto_download=False, source="torrent", auto_season="", auto_episodes="",
-                      auto_folder="", origin="manual", requested_by=""):
+                      auto_folder="", origin="manual", requested_by="",
+                      review_status="", review_reason=""):
     """Ajoute un titre suivi (dédup par tmdb_id + type + qualité) et résout tout
     de suite son id Hydracker. `auto_download`/`source`/`auto_season`/
     `auto_episodes` pilotent le téléchargement automatique dès l'apparition dans
@@ -810,7 +811,10 @@ def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
     défaut) — utile pour ranger une série dans son propre dossier. `origin`
     ("manual"/"whatsapp") et `requested_by` identifient les demandes créées par
     le bot WhatsApp (voir create_bot_request), affichées sur leur propre page de
-    configuration. Si le titre est déjà suivi, sa config d'auto-download est
+    configuration. `review_status`/`review_reason` signalent une demande bot
+    dont l'existence dans Plex n'a pas pu être vérifiée avec certitude (voir
+    check_plex_availability) : à contrôler manuellement avant de faire confiance
+    à l'auto-download. Si le titre est déjà suivi, sa config d'auto-download est
     mise à jour (origin/requested_by ne sont pas écrasés). Renvoie l'entrée
     stockée (ou None)."""
     try:
@@ -826,6 +830,8 @@ def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
     auto_folder = (auto_folder or "").strip()
     origin = "whatsapp" if origin == "whatsapp" else "manual"
     requested_by = (requested_by or "").strip()
+    review_status = "needs_review" if review_status == "needs_review" else ""
+    review_reason = (review_reason or "").strip() if review_status else ""
     config = load_config()
     token = config.get("hydracker_api_token", "").strip()
     tracked = config.setdefault("tracked_titles", [])
@@ -837,6 +843,8 @@ def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
             t["auto_season"] = auto_season
             t["auto_episodes"] = auto_episodes
             t["auto_folder"] = auto_folder
+            t["review_status"] = review_status
+            t["review_reason"] = review_reason
             if t.get("hydracker_id") is None:
                 t["hydracker_id"] = _resolve_hydracker_id(tmdb_id, ttype, token)
             save_config(config)
@@ -856,6 +864,8 @@ def add_tracked_title(tmdb_id, ttype, title, year="", poster=None, quality="",
         "origin": origin,
         "requested_by": requested_by,
         "requested_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") if origin == "whatsapp" else "",
+        "review_status": review_status,
+        "review_reason": review_reason,
         "hydracker_id": _resolve_hydracker_id(tmdb_id, ttype, token),
     }
     tracked.append(entry)
@@ -905,6 +915,11 @@ def update_tracked_title(tmdb_id, ttype, orig_quality, quality="", auto_download
     target["auto_season"] = auto_season
     target["auto_episodes"] = auto_episodes
     target["auto_folder"] = auto_folder
+    # Éditer une demande vaut résolution : on efface le signalement "à
+    # vérifier" éventuel (voir check_plex_availability), l'admin vient de le
+    # faire en enregistrant ce formulaire.
+    target["review_status"] = ""
+    target["review_reason"] = ""
     if target.get("hydracker_id") is None:
         target["hydracker_id"] = _resolve_hydracker_id(tmdb_id, ttype, config.get("hydracker_api_token", "").strip())
     save_config(config)
@@ -947,22 +962,343 @@ def list_bot_requests():
     return requests_
 
 
+# ===== Tautulli / Plex (vérification de disponibilité avant téléchargement) =====
+#
+# Avant de créer une demande bot, on vérifie si le média (ou les épisodes
+# demandés d'une série) est déjà dans la bibliothèque Plex, via l'API Tautulli
+# (qui reflète le contenu réellement scanné par Plex). Objectif : ne jamais
+# lancer un téléchargement automatique pour quelque chose qu'on a déjà.
+#
+# Cette intégration est écrite de façon défensive : n'ayant pas d'instance
+# Tautulli sous la main pour la tester en conditions réelles, toute réponse
+# API à la forme inattendue fait basculer vers un statut "needs_review"
+# (demande créée mais signalée, auto-download désactivé) plutôt que de risquer
+# une fausse conclusion (télécharger un doublon, ou au contraire bloquer à tort
+# un téléchargement légitime).
+
+TAUTULLI_TIMEOUT = 10
+_TMDB_GUID_RE = re.compile(r"tmdb://(\d+)")
+
+
+def _tautulli_configured(config):
+    return bool((config.get("tautulli_url") or "").strip() and (config.get("tautulli_api_key") or "").strip())
+
+
+def set_tautulli_settings(url, api_key):
+    config = load_config()
+    config["tautulli_url"] = (url or "").strip().rstrip("/")
+    config["tautulli_api_key"] = (api_key or "").strip()
+    save_config(config)
+
+
+def _tautulli_call(config, cmd, params=None):
+    """Appelle l'API Tautulli (GET /api/v2?cmd=...). Renvoie (data, erreur) —
+    `data` est le contenu de la clé "data" de la réponse, tel quel (sa forme
+    exacte varie selon la commande : liste nue, ou dict avec une clé imbriquée)."""
+    url = (config.get("tautulli_url") or "").strip()
+    api_key = (config.get("tautulli_api_key") or "").strip()
+    if not url or not api_key:
+        return None, "Tautulli non configuré"
+    query = {"apikey": api_key, "cmd": cmd, "out_type": "json"}
+    query.update(params or {})
+    try:
+        response = requests.get(f"{url}/api/v2", params=query, timeout=TAUTULLI_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return None, f"erreur réseau Tautulli ({exc})"
+    result = (payload or {}).get("response") or {}
+    if result.get("result") != "success":
+        return None, result.get("message") or "réponse Tautulli invalide"
+    return result.get("data"), None
+
+
+def tautulli_test_connection(url, api_key):
+    """Teste la connexion (nom du serveur, léger et toujours disponible).
+    Renvoie (nom_ou_data, erreur)."""
+    return _tautulli_call({"tautulli_url": url, "tautulli_api_key": api_key}, "get_server_friendly_name")
+
+
+def _as_list_strict(data):
+    """Extrait une liste d'une réponse Tautulli, quelle que soit l'enveloppe
+    utilisée selon la commande/version (liste nue, ou dict avec "children_list"
+    / "data" / "results"). Renvoie None (et non []) si la forme n'est reconnue
+    dans AUCUN de ces cas — pour distinguer "vraiment vide" de "je ne sais pas
+    lire cette réponse", et laisser l'appelant basculer vers needs_review
+    plutôt que conclure à tort que Plex n'a rien."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("children_list", "data", "results"):
+            if key in data:
+                return data[key] if isinstance(data[key], list) else []
+    return None
+
+
+def _extract_tmdb_id(guids):
+    for g in guids or []:
+        m = _TMDB_GUID_RE.search(g or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def _tautulli_library_section_ids(config, plex_media_type):
+    """Sections Plex ("movie" ou "show") connues de Tautulli. Renvoie
+    (liste d'ids, erreur)."""
+    data, error = _tautulli_call(config, "get_libraries")
+    if error:
+        return [], error
+    sections = _as_list_strict(data)
+    if sections is None:
+        return [], "réponse Tautulli inattendue (bibliothèques)"
+    return [
+        s.get("section_id") for s in sections
+        if s.get("section_type") == plex_media_type and s.get("section_id") is not None
+    ], None
+
+
+def _tautulli_find_by_tmdb(config, tmdb_id, plex_media_type, title, year):
+    """Cherche un film/show dans Plex (via Tautulli) correspondant à ce
+    tmdb_id. Pré-filtre par titre normalisé (+ année en repli) pour limiter le
+    nombre d'appels get_metadata, mais ne conclut JAMAIS à une correspondance
+    sur le seul titre : confirmation obligatoire par le guid tmdb exact.
+    Renvoie ({"rating_key": ...} ou None si rien trouvé, erreur)."""
+    section_ids, error = _tautulli_library_section_ids(config, plex_media_type)
+    if error:
+        return None, error
+    if not section_ids:
+        return None, None  # aucune bibliothèque de ce type : rien à trouver, pas une erreur
+
+    nname = normalize(title)
+    all_rows = []
+    for section_id in section_ids:
+        data, error = _tautulli_call(
+            config, "get_library_media_info",
+            {"section_id": section_id, "length": 5000},
+        )
+        if error:
+            return None, error
+        rows = _as_list_strict(data)
+        if rows is None:
+            return None, "réponse Tautulli inattendue (contenu de bibliothèque)"
+        all_rows.extend(rows)
+
+    exact = [r for r in all_rows if normalize(r.get("title") or "") == nname]
+    loose = [
+        r for r in all_rows
+        if r not in exact and nname in normalize(r.get("title") or "")
+        and (not year or str(r.get("year") or "") == str(year))
+    ]
+
+    for row in exact + loose:
+        rating_key = row.get("rating_key")
+        if rating_key is None:
+            continue
+        meta, error = _tautulli_call(config, "get_metadata", {"rating_key": rating_key})
+        if error or not isinstance(meta, dict):
+            continue  # un souci ponctuel sur un candidat ne bloque pas les autres
+        found_tmdb = _extract_tmdb_id(meta.get("guids"))
+        if found_tmdb and str(found_tmdb) == str(tmdb_id):
+            return {"rating_key": rating_key}, None
+
+    return None, None
+
+
+def _tautulli_season_episodes(config, show_rating_key, season):
+    """Numéros d'épisodes déjà présents dans Plex pour cette saison d'un show.
+    Renvoie (set d'entiers, erreur). Une saison absente de Plex renvoie un set
+    vide (aucun épisode dispo), pas une erreur."""
+    seasons_data, error = _tautulli_call(config, "get_children_metadata", {"rating_key": show_rating_key})
+    if error:
+        return None, error
+    seasons = _as_list_strict(seasons_data)
+    if seasons is None:
+        return None, "réponse Tautulli inattendue (saisons)"
+
+    season_row = next((s for s in seasons if str(s.get("media_index")) == str(season)), None)
+    if season_row is None:
+        return set(), None
+
+    season_rating_key = season_row.get("rating_key")
+    if season_rating_key is None:
+        return None, "réponse Tautulli inattendue (clé de saison absente)"
+
+    episodes_data, error = _tautulli_call(config, "get_children_metadata", {"rating_key": season_rating_key})
+    if error:
+        return None, error
+    episodes = _as_list_strict(episodes_data)
+    if episodes is None:
+        return None, "réponse Tautulli inattendue (épisodes)"
+
+    numbers = set()
+    for ep in episodes:
+        try:
+            numbers.add(int(ep.get("media_index")))
+        except (TypeError, ValueError):
+            continue
+    return numbers, None
+
+
+def fetch_tmdb_season_episode_count(tmdb_id, season, api_key):
+    """Nombre total d'épisodes d'une saison via TMDB — nécessaire pour savoir
+    si "tous les épisodes" (spec vide) demandés sont déjà tous dans Plex.
+    Renvoie None en cas d'erreur."""
+    if not api_key:
+        return None
+    try:
+        response = requests.get(
+            f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}",
+            params={"api_key": api_key},
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception:
+        return None
+    episodes = data.get("episodes")
+    return len(episodes) if isinstance(episodes, list) else None
+
+
+def check_plex_availability(tmdb_id, media_type, season, episodes_spec, title, year, config):
+    """Vérifie si un titre (ou les épisodes demandés d'une série) existe déjà
+    dans Plex via Tautulli, avant de créer une demande de téléchargement auto.
+
+    Renvoie un dict :
+      - status : "missing" (rien trouvé, ou vérification non applicable —
+        Tautulli non configuré — on procède normalement) / "exists" (tout ce
+        qui est demandé est déjà là -> ne rien créer) / "partial" (une partie
+        existe déjà -> seuls les épisodes manquants seront suivis) /
+        "needs_review" (vérification impossible ou ambiguë -> demande créée
+        quand même mais signalée, auto-download désactivé en attendant).
+      - message : explication humaine (français), vide seulement pour
+        "missing" en fonctionnement normal.
+      - adjusted_episodes : nouvelle spec d'épisodes à suivre (uniquement pour
+        "partial"), sinon None.
+    """
+    if not _tautulli_configured(config):
+        return {"status": "missing", "message": "", "adjusted_episodes": None}
+
+    plex_media_type = "movie" if media_type == "movie" else "show"
+    found, error = _tautulli_find_by_tmdb(config, tmdb_id, plex_media_type, title, year)
+    if error:
+        return {
+            "status": "needs_review",
+            "message": f"Vérification Plex/Tautulli impossible ({error}) : ajouté quand même, à vérifier manuellement.",
+            "adjusted_episodes": None,
+        }
+    if found is None:
+        return {"status": "missing", "message": "", "adjusted_episodes": None}
+
+    if media_type != "tv":
+        return {
+            "status": "exists",
+            "message": f"« {title} » est déjà disponible sur Plex — rien à télécharger.",
+            "adjusted_episodes": None,
+        }
+
+    if not season:
+        return {
+            "status": "needs_review",
+            "message": (
+                f"« {title} » existe déjà (au moins partiellement) sur Plex et aucune saison "
+                "précise n'a été demandée : ajouté quand même, à vérifier manuellement pour éviter les doublons."
+            ),
+            "adjusted_episodes": None,
+        }
+
+    existing, error = _tautulli_season_episodes(config, found["rating_key"], season)
+    if error:
+        return {
+            "status": "needs_review",
+            "message": f"Vérification des épisodes Plex impossible ({error}) : ajouté quand même, à vérifier manuellement.",
+            "adjusted_episodes": None,
+        }
+
+    requested = parse_episode_spec(episodes_spec)
+    if requested is None:
+        total = fetch_tmdb_season_episode_count(tmdb_id, season, config.get("tmdb_api_key", "").strip())
+        if total is None:
+            return {
+                "status": "needs_review",
+                "message": (
+                    f"Impossible de connaître le nombre d'épisodes de la saison {season} de « {title} » "
+                    "(TMDB indisponible) : ajouté quand même, à vérifier manuellement."
+                ),
+                "adjusted_episodes": None,
+            }
+        requested = set(range(1, total + 1))
+
+    missing = sorted(requested - existing)
+    if not missing:
+        return {
+            "status": "exists",
+            "message": f"« {title} » saison {season} est déjà entièrement disponible sur Plex — rien à télécharger.",
+            "adjusted_episodes": None,
+        }
+    if len(missing) == len(requested):
+        return {"status": "missing", "message": "", "adjusted_episodes": None}
+
+    return {
+        "status": "partial",
+        "message": (
+            f"« {title} » saison {season} : {len(requested) - len(missing)} épisode(s) déjà disponible(s) "
+            f"sur Plex, retiré(s) de la demande. Seuls les épisodes manquants ({_format_episode_spec(missing)}) "
+            "seront suivis."
+        ),
+        "adjusted_episodes": _format_episode_spec(missing),
+    }
+
+
 def create_bot_request(tmdb_id, ttype, title, year="", poster=None, quality="",
                        auto_season="", auto_episodes="", requested_by=""):
     """Crée un titre suivi à partir d'une demande WhatsApp confirmée par
-    l'utilisateur : qualité par défaut 1080p si non précisée, source toujours
-    "ddl" (le bot ne gère que le DDL auto — le torrent reste un choix manuel
-    depuis la page Titres suivis), auto-download toujours activé. Renvoie
-    l'entrée créée/mise à jour (ou None si tmdb_id/type/title manquants)."""
+    l'utilisateur, après vérification de disponibilité Plex (voir
+    check_plex_availability) : qualité par défaut 1080p si non précisée,
+    source toujours "ddl" (le bot ne gère que le DDL auto — le torrent reste un
+    choix manuel depuis la page Titres suivis), auto-download activé sauf si
+    la vérification Plex est incertaine (auto-download alors désactivé, en
+    attendant une correction manuelle).
+
+    Renvoie (status, entry, message) :
+      - status : "created" / "already_available" (entry=None, rien créé) /
+        "needs_review" (entry créée mais signalée) / "error" (paramètres
+        invalides, entry=None).
+    """
     if not (tmdb_id and ttype and title):
-        return None
+        return "error", None, "tmdb_id, type et title sont requis"
+
     quality = (quality or "").strip() or DEFAULT_BOT_QUALITY
-    return add_tracked_title(
+    config = load_config()
+
+    availability = check_plex_availability(tmdb_id, ttype, auto_season, auto_episodes, title, year, config)
+
+    if availability["status"] == "exists":
+        return "already_available", None, availability["message"]
+
+    final_episodes = availability["adjusted_episodes"] if availability["adjusted_episodes"] is not None else auto_episodes
+    needs_review = availability["status"] == "needs_review"
+
+    entry = add_tracked_title(
         tmdb_id, ttype, title, year=year, poster=poster, quality=quality,
-        auto_download=True, source="ddl",
-        auto_season=auto_season, auto_episodes=auto_episodes,
+        # Tant que la vérification Plex est incertaine, on désactive
+        # l'auto-download par prudence (mieux vaut manquer un cycle que
+        # télécharger un doublon) — l'admin le réactive en corrigeant la
+        # demande, ce qui efface aussi le signalement (voir update_tracked_title).
+        auto_download=not needs_review, source="ddl",
+        auto_season=auto_season, auto_episodes=final_episodes,
         origin="whatsapp", requested_by=requested_by,
+        review_status="needs_review" if needs_review else "",
+        review_reason=availability["message"] if needs_review else "",
     )
+
+    if needs_review:
+        return "needs_review", entry, availability["message"]
+    if availability["status"] == "partial":
+        return "created", entry, availability["message"]
+
+    season_bit = f" (saison {auto_season}, épisodes {auto_episodes or 'tous'})" if ttype == "tv" else ""
+    return "created", entry, f"« {title} »{season_bit} ajouté en téléchargement automatique ({quality})."
 
 
 def remove_tracked_title(tmdb_id, ttype, quality=""):
@@ -1026,6 +1362,25 @@ def parse_episode_spec(spec):
             except ValueError:
                 continue
     return episodes or None
+
+
+def _format_episode_spec(numbers):
+    """Inverse de parse_episode_spec : compacte une liste d'entiers en spec
+    "1,3,5-8" (plages consécutives regroupées). Utilisé pour recalculer les
+    épisodes restants après retrait de ceux déjà présents dans Plex."""
+    numbers = sorted(set(numbers))
+    if not numbers:
+        return ""
+    ranges = []
+    start = prev = numbers[0]
+    for n in numbers[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        ranges.append((start, prev))
+        start = prev = n
+    ranges.append((start, prev))
+    return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges)
 
 
 def _episode_int(link):
@@ -1527,24 +1882,37 @@ def get_poster_url(raw_title, config):
     if not clean_title:
         return None
 
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT poster_url FROM poster_cache WHERE clean_title = ? COLLATE NOCASE",
-        (clean_title,),
-    ).fetchone()
-    if row is not None:
-        conn.close()
-        return row["poster_url"]
+    try:
+        conn = get_connection()
+    except sqlite3.OperationalError as exc:
+        print(f"[poster] base de données indisponible, affiche ignorée pour ce cycle : {exc}")
+        return None
 
-    poster_url = fetch_poster_from_tmdb(clean_title, api_key)
-    with _lock:
-        conn.execute(
-            "INSERT OR IGNORE INTO poster_cache (clean_title, poster_url) VALUES (?, ?)",
-            (clean_title, poster_url),
-        )
-        conn.commit()
-    conn.close()
-    return poster_url
+    try:
+        row = conn.execute(
+            "SELECT poster_url FROM poster_cache WHERE clean_title = ? COLLATE NOCASE",
+            (clean_title,),
+        ).fetchone()
+        if row is not None:
+            return row["poster_url"]
+
+        poster_url = fetch_poster_from_tmdb(clean_title, api_key)
+        with _lock:
+            conn.execute(
+                "INSERT OR IGNORE INTO poster_cache (clean_title, poster_url) VALUES (?, ?)",
+                (clean_title, poster_url),
+            )
+            conn.commit()
+        return poster_url
+    except sqlite3.OperationalError as exc:
+        # Une affiche non mise en cache n'est pas grave (re-tentée au prochain
+        # cycle) : ça ne doit jamais faire planter tout le fetch, encore moins
+        # tout le démarrage de l'appli (ce cycle est appelé de façon
+        # synchrone avant que le serveur ne réponde — voir app.py).
+        print(f"[poster] erreur base de données, affiche ignorée pour ce cycle : {exc}")
+        return None
+    finally:
+        conn.close()
 
 
 def fetch_once():
@@ -1577,61 +1945,89 @@ def fetch_once():
             link = entry.get("link")
             if not link:
                 continue
-            if is_dismissed(conn, link):
-                continue
-
-            confirmed, quality_rejected = match_tracked_titles(title, summary, link, tracked_titles, tmdb_key)
-            matched = [e.get("title", "") for e in confirmed]
-            quality_ok = not quality_rejected or bool(confirmed)
-            published = entry.get("published", entry.get("updated", ""))
-            published_at = extract_published_at(entry)
-            download_url = extract_download_url(entry)
-            # Affiche : d'abord une image déjà embarquée dans le flux (gratuit,
-            # ex. Hydracker), sinon recherche TMDB pour les titres qui matchent
-            # un titre suivi (pour limiter les appels API).
-            poster_url = extract_poster_from_summary(summary)
-            if not poster_url and matched:
-                poster_url = get_poster_url(title, config)
 
             try:
-                with _lock:
-                    cursor = conn.execute(
-                        """INSERT INTO articles
-                           (feed_name, feed_url, title, url, download_url, summary, published, published_at, matched_keywords, quality_ok, poster_url)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            feed_name,
-                            feed_url,
-                            title,
-                            link,
-                            download_url,
-                            summary,
-                            published,
-                            published_at,
-                            ", ".join(matched),
-                            1 if quality_ok else 0,
-                            poster_url,
-                        ),
-                    )
-                    conn.commit()
+                _process_feed_entry(
+                    conn, config, tracked_titles, tmdb_key,
+                    feed_name, feed_url, title, summary, link, entry,
+                )
                 new_count += 1
-            except sqlite3.IntegrityError:
-                continue  # URL déjà connue
-
-            # Téléchargement auto DDL : dès qu'un nouvel article correspond à un
-            # titre suivi configuré en auto-download DDL, on lance l'envoi vers
-            # JDownloader (Hydracker uniquement). Un seul déclenchement par
-            # article suffit (même titre × qualités → même id Hydracker).
-            auto_entry = next(
-                (e for e in confirmed if e.get("auto_download") and e.get("source") == "ddl"),
-                None,
-            )
-            if auto_entry is not None and extract_hydracker_title_id(link):
-                article = {"id": cursor.lastrowid, "url": link, "title": title, "feed_name": feed_name}
-                _run_and_mark_auto_download(conn, article, auto_entry, config)
+            except _SkipEntry:
+                continue
+            except sqlite3.OperationalError as exc:
+                # Base momentanément verrouillée (accès concurrent, hoquet du
+                # système de fichiers...) : cet article sera retenté au
+                # prochain cycle plutôt que de faire planter tout le fetch —
+                # et, pire, le démarrage de l'appli (voir app.py, où ce
+                # premier cycle est appelé de façon synchrone).
+                print(f"[fetch] base de données verrouillée, article ignoré pour ce cycle ({title!r}) : {exc}")
+                continue
 
     conn.close()
     return new_count
+
+
+class _SkipEntry(Exception):
+    """Signal interne : cet article de flux n'a rien de nouveau à insérer
+    (déjà vu/écarté, ou URL déjà connue) — ne compte pas comme une erreur."""
+
+
+def _process_feed_entry(conn, config, tracked_titles, tmdb_key, feed_name, feed_url, title, summary, link, entry):
+    """Traite un item de flux : matching, résolution d'affiche, insertion en
+    base, puis déclenchement de l'auto-download DDL si applicable. Isolé de
+    fetch_once() pour que chaque article soit protégé individuellement contre
+    un verrou SQLite transitoire (voir l'appelant)."""
+    if is_dismissed(conn, link):
+        raise _SkipEntry
+
+    confirmed, quality_rejected = match_tracked_titles(title, summary, link, tracked_titles, tmdb_key)
+    matched = [e.get("title", "") for e in confirmed]
+    quality_ok = not quality_rejected or bool(confirmed)
+    published = entry.get("published", entry.get("updated", ""))
+    published_at = extract_published_at(entry)
+    download_url = extract_download_url(entry)
+    # Affiche : d'abord une image déjà embarquée dans le flux (gratuit,
+    # ex. Hydracker), sinon recherche TMDB pour les titres qui matchent
+    # un titre suivi (pour limiter les appels API).
+    poster_url = extract_poster_from_summary(summary)
+    if not poster_url and matched:
+        poster_url = get_poster_url(title, config)
+
+    try:
+        with _lock:
+            cursor = conn.execute(
+                """INSERT INTO articles
+                   (feed_name, feed_url, title, url, download_url, summary, published, published_at, matched_keywords, quality_ok, poster_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    feed_name,
+                    feed_url,
+                    title,
+                    link,
+                    download_url,
+                    summary,
+                    published,
+                    published_at,
+                    ", ".join(matched),
+                    1 if quality_ok else 0,
+                    poster_url,
+                ),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError:
+        raise _SkipEntry  # URL déjà connue
+
+    # Téléchargement auto DDL : dès qu'un nouvel article correspond à un
+    # titre suivi configuré en auto-download DDL, on lance l'envoi vers
+    # JDownloader (Hydracker uniquement). Un seul déclenchement par
+    # article suffit (même titre × qualités → même id Hydracker).
+    auto_entry = next(
+        (e for e in confirmed if e.get("auto_download") and e.get("source") == "ddl"),
+        None,
+    )
+    if auto_entry is not None and extract_hydracker_title_id(link):
+        article = {"id": cursor.lastrowid, "url": link, "title": title, "feed_name": feed_name}
+        _run_and_mark_auto_download(conn, article, auto_entry, config)
 
 
 def backfill_posters():

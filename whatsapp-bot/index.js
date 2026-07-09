@@ -209,13 +209,11 @@ async function finalizeRequest(sock, chatJid, senderJid, key, conv, pushName) {
     return;
   }
 
-  const seasonBit = selected.type === "tv"
-    ? ` (saison ${conv.data.season || "toutes"}, épisodes ${conv.data.episodes || "tous"})`
-    : "";
-  await reply(
-    sock, chatJid, senderJid,
-    `C'est parti ! « ${selected.title} »${seasonBit} sera téléchargé automatiquement dès qu'il est disponible.`
-  );
+  // Flask a déjà toute la logique de vérification Plex/Tautulli et formule un
+  // message complet et adapté selon le cas (créé / déjà disponible sur Plex /
+  // à vérifier manuellement) : on le relaie tel quel plutôt que de dupliquer
+  // cette logique côté bot.
+  await reply(sock, chatJid, senderJid, result.message || "Demande enregistrée.");
 }
 
 async function start() {
